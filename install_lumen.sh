@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# === Ajustes base ===
 VPS_HOST="200.234.230.254"
 VPS_USER="root"
 DEVICE_ID="$(hostname -s)"
-LUMEN_DIR="/home/pi/Lumen"
+USER_NAME="${USER:-admin}"           # el usuario actual (admin en tu caso)
+HOME_DIR="${HOME:-/home/admin}"      # home del usuario actual
+LUMEN_DIR="$HOME_DIR/Lumen"
 CONF_DIR="/etc/lumen"
 BIN_DIR="/usr/local/bin"
-LOG_DIR="/var/log"
-PORT_DEFAULT="2201"  # cambia si agregas más Raspberry
+PORT_DEFAULT="2201"                  # cambia para cada Pi si usas varias
 
 sudo mkdir -p "$CONF_DIR"
 sudo mkdir -p /var/local/rpi-setup
@@ -19,13 +21,13 @@ sudo apt update
 sudo apt install -y autossh openssh-client python3 python3-pip vlc python3-vlc alsa-utils jq rsync
 
 echo "[2/8] Generando clave SSH si no existe…"
-if [[ ! -f /home/pi/.ssh/id_ed25519 ]]; then
-  sudo -u pi mkdir -p /home/pi/.ssh
-  sudo -u pi ssh-keygen -t ed25519 -f /home/pi/.ssh/id_ed25519 -N "" -C "pi@${DEVICE_ID}"
+if [[ ! -f "$HOME_DIR/.ssh/id_ed25519" ]]; then
+  mkdir -p "$HOME_DIR/.ssh"
+  ssh-keygen -t ed25519 -f "$HOME_DIR/.ssh/id_ed25519" -N "" -C "${USER_NAME}@${DEVICE_ID}"
 fi
-chmod 700 /home/pi/.ssh
-chmod 600 /home/pi/.ssh/id_ed25519
-chmod 644 /home/pi/.ssh/id_ed25519.pub
+chmod 700 "$HOME_DIR/.ssh"
+chmod 600 "$HOME_DIR/.ssh/id_ed25519"
+chmod 644 "$HOME_DIR/.ssh/id_ed25519.pub"
 
 echo "[3/8] Configuración inicial…"
 sudo tee "$CONF_DIR/lumen.conf" >/dev/null <<CFG
@@ -42,6 +44,7 @@ ADS_SOURCE="Anuncios"
 CFG
 
 echo "[4/8] Servicio AutoSSH…"
+# Nota: User=admin; si en otra Pi tu usuario se llama distinto, cambia "admin" por ese nombre.
 sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<'UNIT'
 [Unit]
 Description=AutoSSH reverse tunnel to VPS
@@ -49,12 +52,14 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Este servicio corre como el usuario local (admin en esta instalación)
+User=admin
 EnvironmentFile=/etc/lumen/lumen.conf
-User=pi
+# %h se expande al home del usuario del servicio (/home/admin)
 ExecStart=/usr/bin/autossh -M 0 -N \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
-  -i /home/pi/.ssh/id_ed25519 \
+  -i %h/.ssh/id_ed25519 \
   -R ${PORT}:localhost:22 ${VPS_USER}@${VPS_HOST}
 Restart=always
 RestartSec=5
@@ -97,8 +102,10 @@ def within_range(today, start, end):
     sm,sd = map(int,start.split("-"))
     em,ed = map(int,end.split("-"))
     tm,td = map(int,today.split("-"))
+    # rango que cruza año (ej 12-01 -> 01-07)
     if sm>em or (sm==em and sd>ed):
         return (tm>sm or (tm==sm and td>=sd)) or (tm<em or (tm==em and td<=ed))
+    # rango normal
     return (tm>sm or (tm==sm and td>=sd)) and (tm<em or (tm==em and td<=ed))
 
 def list_mp3s(folder):
@@ -106,6 +113,7 @@ def list_mp3s(folder):
     return sorted([str(p) for p in folder.glob("*.mp3")])
 
 def play_file(path, vol):
+    # Ajusta volumen ALSA general (0-100). En algunas placas el control puede no llamarse "PCM".
     subprocess.run(["amixer","set","PCM",f"{vol}%"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["cvlc","--play-and-exit","--no-video","--aout=alsa",path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -126,20 +134,31 @@ def main():
         if not pool["temp"]:  pool["temp"]=temp[:]
 
         seq=[]
+        # 3 canciones aleatorias sin repetir
         for _ in range(3):
             if pool["songs"]: seq.append(pool["songs"].pop(0))
-        if season and pool["temp"]: seq.append(pool["temp"].pop(0))
+        # anuncio (o temporada)
+        if season and pool["temp"]: 
+            seq.append(pool["temp"].pop(0))
         else:
-            if ads_source=="Temporada" and pool["temp"]: seq.append(pool["temp"].pop(0))
-            elif pool["ads"]: seq.append(pool["ads"].pop(0))
-        if xmas and pool["xmas"]: seq.append(pool["xmas"].pop(0))
+            if ads_source=="Temporada" and pool["temp"]:
+                seq.append(pool["temp"].pop(0))
+            elif pool["ads"]:
+                seq.append(pool["ads"].pop(0))
+        # navideña si aplica
+        if xmas and pool["xmas"]:
+            seq.append(pool["xmas"].pop(0))
 
-        if not seq: time.sleep(5); continue
+        if not seq: 
+            time.sleep(5); 
+            continue
         for track in seq:
-            if track and os.path.exists(track): play_file(track, vol)
+            if track and os.path.exists(track): 
+                play_file(track, vol)
         time.sleep(1)
 
-if __name__=="__main__": main()
+if __name__=="__main__": 
+    main()
 PY
 sudo chmod +x ${BIN_DIR}/lumen_player.py
 
@@ -150,7 +169,7 @@ After=sound.target network-online.target
 Wants=network-online.target
 
 [Service]
-User=pi
+User=admin
 Restart=always
 RestartSec=2
 ExecStart=/usr/local/bin/lumen_player.py
@@ -166,7 +185,8 @@ sudo tee ${BIN_DIR}/lumen-agent.sh >/dev/null <<'AGENT'
 set -euo pipefail
 CONF="/etc/lumen/lumen.conf"
 source "$CONF"
-ssh -i /home/pi/.ssh/id_ed25519 ${VPS_USER}@${VPS_HOST} "date -u +%Y-%m-%dT%H:%M:%SZ > /srv/lumen/heartbeats/${DEVICE_ID}.ts" || true
+# Sube heartbeat (timestamp UTC) al VPS
+ssh -o StrictHostKeyChecking=accept-new -i /home/admin/.ssh/id_ed25519 ${VPS_USER}@${VPS_HOST} "date -u +%Y-%m-%dT%H:%M:%SZ > /srv/lumen/heartbeats/${DEVICE_ID}.ts" || true
 AGENT
 sudo chmod +x ${BIN_DIR}/lumen-agent.sh
 
@@ -190,7 +210,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=pi
+User=admin
 Type=oneshot
 ExecStart=/usr/local/bin/lumen-agent.sh
 UNIT
@@ -199,5 +219,9 @@ echo "[7/8] Habilitando servicios…"
 sudo systemctl daemon-reload
 sudo systemctl enable --now autossh-lumen.service lumen-player.service lumen-agent.timer
 
-echo "✅ Instalación completada.
-Recuerda ejecutar: ssh-copy-id -i ~/.ssh/id_ed25519.pub ${VPS_USER}@${VPS_HOST}"
+echo "[8/8] Listo.
+Ahora autoriza la llave pública en el VPS (una sola vez):
+  ssh-copy-id -i $HOME/.ssh/id_ed25519.pub ${VPS_USER}@${VPS_HOST}
+y verifica en el VPS con:
+  lumen-list.sh
+"
