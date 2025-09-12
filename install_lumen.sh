@@ -24,14 +24,11 @@ chmod 600 "$HOME_DIR/.ssh/id_ed25519"
 chmod 644 "$HOME_DIR/.ssh/id_ed25519.pub"
 
 echo "[3/9] Autorizar clave en VPS (idempotente)…"
-# Si ya está, ssh-copy-id lo informa y continúa.
 sshpass -p "$BOOT_PASS" ssh-copy-id -o StrictHostKeyChecking=accept-new -i "$HOME_DIR/.ssh/id_ed25519.pub" ${VPS_USER}@${VPS_HOST} || true
 
 echo "[4/9] Obtener/reciclar DEVICE_ID y PORT…"
-DEVICE_ID=""
-PORT=""
+DEVICE_ID=""; PORT=""
 if [[ -f "$CONF_DIR/lumen.conf" ]]; then
-  # Reutiliza si ya existe, evita re-registro
   DEVICE_ID=$(sed -n 's/^DEVICE_ID="\([^"]*\)"/\1/p' "$CONF_DIR/lumen.conf" || true)
   PORT=$(sed -n 's/^PORT="\([^"]*\)"/\1/p' "$CONF_DIR/lumen.conf" || true)
 fi
@@ -40,7 +37,8 @@ if [[ -n "$DEVICE_ID" && -n "$PORT" ]]; then
   echo "Reutilizando config existente: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
 else
   echo "No hay config previa. Solicitando asignación al VPS…"
-  ASSIGN=$(ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} "/usr/local/bin/lumen-assign.sh --register")
+  PUBKEY_B64=$(base64 -w0 < "$HOME_DIR/.ssh/id_ed25519.pub")
+  ASSIGN=$(ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} "/usr/local/bin/lumen-assign.sh --register --pubkey-b64 \"$PUBKEY_B64\"")
   eval "$ASSIGN"
   echo "Asignado: DEVICE_ID=$DEVICE_ID PORT=$PORT"
 fi
@@ -119,7 +117,6 @@ UNIT
 echo "[8/9] Activar/reiniciar servicios…"
 sudo systemctl daemon-reload
 sudo systemctl enable autossh-lumen.service lumen-agent.timer
-# Reinicia siempre para aplicar cambios si se re-ejecuta el instalador
 sudo systemctl restart autossh-lumen.service
 sudo systemctl restart lumen-agent.timer
 
