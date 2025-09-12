@@ -19,7 +19,7 @@ CFG
 
 [[ -f "$BASE/devices.tsv" ]] || echo -e "# DEVICE_ID\tPORT" > "$BASE/devices.tsv"
 
-echo "[3/6] lumen-assign.sh (con reuso por clave)…"
+echo "[3/6] lumen-assign.sh (reuso por clave)…"
 cat > /usr/local/bin/lumen-assign.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -42,7 +42,6 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "${MODE:-}" == "register" && -n "$PUBKEY_B64" ]] || { echo "Falta --pubkey-b64"; exit 1; }
 
-# Decodifica la clave pública
 PUBKEY=$(printf "%s" "$PUBKEY_B64" | base64 -d)
 
 exec 9>"$LOCK"
@@ -66,10 +65,8 @@ if ls "$KEYS"/*.pub >/dev/null 2>&1; then
 fi
 
 if [[ -n "$FOUND_DEV" ]]; then
-  # Busca puerto en TSV
   PORT="$(awk -F'\t' -v d="$FOUND_DEV" '$1==d{print $2}' "$TSV" | tail -n1)"
   if [[ -z "$PORT" ]]; then
-    # Si por alguna razón no está en TSV, asígnale uno libre y escríbelo
     port=$PSTART
     while : ; do
       if ! grep -q -P "^\S+\t${port}$" "$TSV" 2>/dev/null && ! ss -lnt "( sport = :$port )" | grep -q "$port"; then
@@ -87,7 +84,6 @@ if [[ -n "$FOUND_DEV" ]]; then
 fi
 
 # 2) Clave nueva -> asignar ID/puerto nuevos
-# Puerto libre
 port=$PSTART
 while : ; do
   if ! grep -q -P "^\S+\t${port}$" "$TSV" 2>/dev/null && ! ss -lnt "( sport = :$port )" | grep -q "$port"; then
@@ -96,7 +92,6 @@ while : ; do
   port=$((port+1))
 done
 
-# ID secuencial
 printf -v idx "%02d" "$NEXT"
 dev="${PREFIX}-${idx}"
 while grep -q -P "^${dev}\t" "$TSV" 2>/dev/null; do
@@ -105,7 +100,6 @@ while grep -q -P "^${dev}\t" "$TSV" 2>/dev/null; do
   dev="${PREFIX}-${idx}"
 done
 
-# Guarda asignación y clave
 echo -e "${dev}\t${port}" >> "$TSV"
 echo "$PUBKEY" > "$KEYS/${dev}.pub"
 chmod 644 "$KEYS/${dev}.pub"
@@ -143,10 +137,10 @@ done < "$TSV"
 SH
 chmod +x /usr/local/bin/lumen-list.sh
 
-echo "[5/6] sshd (keepalive/túneles)…"
+echo "[5/6] sshd (keepalive + túneles)…"
 SSHD="/etc/ssh/sshd_config"
 cp -f "$SSHD" "${SSHD}.bak.$(date +%F-%H%M)" || true
-# Mantener sesiones
+# Mantener sesiones vivas ~1h (ajusta a gusto)
 grep -q '^ClientAliveInterval' "$SSHD" && sed -i 's/^ClientAliveInterval.*/ClientAliveInterval 300/' "$SSHD" || echo "ClientAliveInterval 300" >> "$SSHD"
 grep -q '^ClientAliveCountMax' "$SSHD" && sed -i 's/^ClientAliveCountMax.*/ClientAliveCountMax 12/' "$SSHD" || echo "ClientAliveCountMax 12" >> "$SSHD"
 # Túneles
@@ -158,4 +152,4 @@ fi
 grep -q '^GatewayPorts' "$SSHD" || echo "GatewayPorts no" >> "$SSHD"
 systemctl restart ssh
 
-echo "[6/6] Listo ✅  (asignador con reuso por clave)"
+echo "[6/6] Listo ✅  (asignador con reuso por clave, listador y sshd ajustado)"
