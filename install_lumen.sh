@@ -83,33 +83,49 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-# Heartbeat
-cat > ${BIN_DIR}/lumen-agent.sh <<'AGENT'
+# Heartbeat (agente con logs)
+sudo tee /usr/local/bin/lumen-agent.sh >/dev/null <<'AGENT'
 #!/usr/bin/env bash
 set -euo pipefail
 CONF="/etc/lumen/lumen.conf"; source "$CONF"
-date -u +"%Y-%m-%dT%H:%M:%SZ" | ssh -o StrictHostKeyChecking=accept-new -i /home/admin/.ssh/id_ed25519 ${VPS_USER}@${VPS_HOST} "cat > /srv/lumen/heartbeats/${DEVICE_ID}.ts" || true
+
+STAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+logger -t lumen-agent "Enviando heartbeat: DEVICE_ID=${DEVICE_ID} -> ${VPS_USER}@${VPS_HOST}"
+
+printf "%s" "$STAMP" \
+  | ssh -o StrictHostKeyChecking=accept-new \
+        -i /home/admin/.ssh/id_ed25519 \
+        ${VPS_USER}@${VPS_HOST} \
+        "cat > /srv/lumen/heartbeats/${DEVICE_ID}.ts"
+
+logger -t lumen-agent "Heartbeat OK: ${STAMP}"
 AGENT
-sudo chmod +x ${BIN_DIR}/lumen-agent.sh
+sudo chmod +x /usr/local/bin/lumen-agent.sh
 
 sudo tee /etc/systemd/system/lumen-agent.service >/dev/null <<'UNIT'
 [Unit]
 Description=Lumen Agent (heartbeat)
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 User=admin
 Type=oneshot
 ExecStart=/usr/local/bin/lumen-agent.sh
+StandardOutput=journal
+StandardError=journal
 UNIT
 
 sudo tee /etc/systemd/system/lumen-agent.timer >/dev/null <<'UNIT'
 [Unit]
 Description=Lumen Agent Timer
+
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=60
 Unit=lumen-agent.service
+Persistent=true
+
 [Install]
 WantedBy=timers.target
 UNIT
@@ -120,8 +136,10 @@ sudo systemctl enable autossh-lumen.service lumen-agent.timer
 sudo systemctl restart autossh-lumen.service
 sudo systemctl restart lumen-agent.timer
 
-echo "[9/9] Heartbeat inmediato…"
+echo "[9/9] Heartbeat inmediato y auto-test…"
 /usr/local/bin/lumen-agent.sh || true
+ssh -o StrictHostKeyChecking=accept-new -i "$HOME_DIR/.ssh/id_ed25519" ${VPS_USER}@${VPS_HOST} \
+  "test -s /srv/lumen/heartbeats/${DEVICE_ID}.ts && tail -n1 /srv/lumen/heartbeats/${DEVICE_ID}.ts || echo 'NO_HEARTBEAT'"
 
 echo "✅ Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}
 Conéctate desde el VPS con:
