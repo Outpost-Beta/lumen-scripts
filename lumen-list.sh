@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CONF="/etc/lumen-vps.conf"
-source "$CONF"
+CONF="/etc/lumen-vps.conf"; source "$CONF"
 HEART="/srv/lumen/heartbeats"
 TSV="$DEVICES_TSV"
 now=$(date -u +%s)
 printf "%-12s %-6s %-22s %-6s %-3s\n" "DEVICE_ID" "PORT" "Last Seen (UTC)" "Age(s)" "UP?"
 while IFS=$'\t' read -r dev port; do
-  [[ -z "$dev" || "$dev" =~ ^# ]] && continue
+  [[ -z "${dev:-}" || "$dev" =~ ^# ]] && continue
   f="$HEART/$dev.ts"
   if [[ -f "$f" ]]; then
     ts=$(cat "$f")
