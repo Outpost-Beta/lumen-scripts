@@ -140,6 +140,51 @@ done < "$TSV"
 SH
 chmod +x /usr/local/bin/lumen-list.sh
 
+# SSH config para aceptar nuevas huellas de localhost
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+if ! grep -q '^Host localhost' /root/.ssh/config 2>/dev/null; then
+  cat >> /root/.ssh/config <<'CFG'
+
+# Acepta automáticamente nuevas huellas para túneles locales
+Host localhost
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /root/.ssh/known_hosts
+CFG
+  chmod 600 /root/.ssh/config
+fi
+
+# Helper para conectar por DEVICE_ID o PORT
+cat > /usr/local/bin/lumen-ssh.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+CONF="/etc/lumen-vps.conf"; source "$CONF"
+TSV="$DEVICES_TSV"
+
+usage() { echo "Uso: lumen-ssh.sh [DEVICE_ID | -p PORT] [comando...]"; exit 1; }
+
+PORT_ARG=""
+CMD=()
+
+if [[ $# -eq 0 ]]; then usage; fi
+if [[ "$1" == "-p" ]]; then
+  [[ $# -ge 2 ]] || usage
+  PORT_ARG="$2"; shift 2
+  CMD=("$@")
+else
+  DEV="$1"; shift
+  CMD=("$@")
+  PORT_ARG="$(awk -F'\t' -v d="$DEV" '$1==d{print $2}' "$TSV" | tail -n1)"
+  [[ -n "$PORT_ARG" ]] || { echo "No encuentro puerto para $DEV"; exit 2; }
+fi
+
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  exec ssh -p "$PORT_ARG" admin@localhost
+else
+  exec ssh -p "$PORT_ARG" admin@localhost "${CMD[@]}"
+fi
+SH
+chmod +x /usr/local/bin/lumen-ssh.sh
+
 echo "[6/7] sshd: allow forwarding + keepalives…"
 SSHD="/etc/ssh/sshd_config"
 cp -f "$SSHD" "${SSHD}.bak.$(date +%F-%H%M)" || true
