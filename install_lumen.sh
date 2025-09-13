@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === Config mínima ===
 VPS_HOST="200.234.230.254"
 VPS_USER="root"
 BOOT_USER="${USER:-admin}"
@@ -21,7 +20,7 @@ fi
 chmod 600 "$HOME_DIR/.ssh/id_ed25519"
 chmod 644 "$HOME_DIR/.ssh/id_ed25519.pub"
 
-echo "[3/9] Autorizar Pi→VPS (te pedirá la contraseña de ${VPS_USER}@${VPS_HOST} una vez)…"
+echo "[3/9] Autorizar Pi→VPS (una vez)…"
 ssh-copy-id -o StrictHostKeyChecking=accept-new -i "$HOME_DIR/.ssh/id_ed25519.pub" ${VPS_USER}@${VPS_HOST} || true
 
 echo "[4/9] Obtener/reciclar DEVICE_ID y PORT desde el VPS…"
@@ -31,15 +30,15 @@ if [[ -f "$CONF_DIR/lumen.conf" ]]; then
   PORT=$(sed -n 's/^PORT="\([^"]*\)"/\1/p' "$CONF_DIR/lumen.conf" || true)
 fi
 if [[ -n "${DEVICE_ID:-}" && -n "${PORT:-}" ]]; then
-  echo "Reutilizando config existente: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
+  echo "Reutilizando: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
 else
   PUBKEY_B64=$(base64 -w0 < "$HOME_DIR/.ssh/id_ed25519.pub")
   ASSIGN=$(ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} "/usr/local/bin/lumen-assign.sh --register --pubkey-b64 \"$PUBKEY_B64\"")
   eval "$ASSIGN"
-  echo "Asignado: DEVICE_ID=$DEVICE_ID PORT=$PORT"
+  echo "Asignado: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
 fi
 
-echo "[5/9] Guardar config…"
+echo "[5/9] Guardar configuración…"
 sudo mkdir -p "$CONF_DIR"
 sudo tee "$CONF_DIR/lumen.conf" >/dev/null <<CFG
 DEVICE_ID="${DEVICE_ID}"
@@ -54,13 +53,10 @@ SEASON_END=""
 ADS_SOURCE="Anuncios"
 CFG
 
-echo "[6/9] Autorizar VPS→Pi por túnel (sin password)…"
-mkdir -p "$HOME_DIR/.ssh" && chmod 700 "$HOME_DIR/.ssh"
+echo "[6/9] Autorizar VPS→Pi por túnel…"
 touch "$HOME_DIR/.ssh/authorized_keys" && chmod 600 "$HOME_DIR/.ssh/authorized_keys"
-# Traer la pub del VPS y agregarla
 ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} \
   "cat /srv/lumen/vps_root_id_ed25519.pub" >> "$HOME_DIR/.ssh/authorized_keys" || true
-# Deduplicar
 awk '!seen[$0]++' "$HOME_DIR/.ssh/authorized_keys" > "$HOME_DIR/.ssh/authorized_keys.tmp" && mv "$HOME_DIR/.ssh/authorized_keys.tmp" "$HOME_DIR/.ssh/authorized_keys"
 chown -R ${BOOT_USER}:${BOOT_USER} "$HOME_DIR/.ssh"
 
@@ -68,7 +64,6 @@ echo "[7/9] Carpetas de audio…"
 mkdir -p "$LUMEN_DIR"/{Canciones,Anuncios,Navideña,Temporada}
 
 echo "[8/9] Servicios systemd…"
-# --- autossh reverse tunnel ---
 sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<'UNIT'
 [Unit]
 Description=AutoSSH reverse tunnel to VPS
@@ -90,15 +85,12 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-# --- heartbeat robusto ---
 sudo tee /usr/local/bin/lumen-agent.sh >/dev/null <<'AGENT'
 #!/usr/bin/env bash
 set -euo pipefail
 CONF="/etc/lumen/lumen.conf"; source "$CONF"
-
 STAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 logger -t lumen-agent "Enviando heartbeat: DEVICE_ID=${DEVICE_ID} -> ${VPS_USER}@${VPS_HOST}"
-
 set +e
 printf "%s" "$STAMP" | ssh \
   -o BatchMode=yes \
@@ -110,7 +102,6 @@ printf "%s" "$STAMP" | ssh \
   "${VPS_USER}@${VPS_HOST}" "cat > /srv/lumen/heartbeats/${DEVICE_ID}.ts"
 rc=$?
 set -e
-
 if [ "$rc" -eq 0 ]; then
   logger -t lumen-agent "Heartbeat OK: ${STAMP}"
 else
@@ -136,18 +127,25 @@ UNIT
 sudo tee /etc/systemd/system/lumen-agent.timer >/dev/null <<'UNIT'
 [Unit]
 Description=Lumen Agent Timer
-
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=60
 Unit=lumen-agent.service
 Persistent=true
-
 [Install]
 WantedBy=timers.target
 UNIT
 
-echo "[9/9] Activar y probar…"
+echo "[9/9] Sudoers (NOPASSWD) para broadcast seguro…"
+# reboot sin password
+echo 'admin ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/lumen-reboot >/dev/null
+# actualización desde repo (mínimos necesarios)
+cat <<'EOF' | sudo tee /etc/sudoers.d/lumen-update >/dev/null
+admin ALL=(ALL) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/systemctl, /usr/bin/ssh-copy-id, /usr/bin/install, /usr/bin/curl, /usr/bin/chmod, /usr/bin/mkdir, /usr/bin/tee, /usr/bin/bash, /usr/bin/sh
+EOF
+sudo chmod 440 /etc/sudoers.d/lumen-reboot /etc/sudoers.d/lumen-update
+
+echo "[Activando servicios…]"
 sudo systemctl daemon-reload
 sudo systemctl enable autossh-lumen.service lumen-agent.timer
 sudo systemctl restart autossh-lumen.service
