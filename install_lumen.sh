@@ -1,83 +1,92 @@
 #!/usr/bin/env bash
+# install_lumen.sh  (Raspberry Pi • SOLO Lumen • sin OneDrive)
+# Raspberry Pi OS Bookworm Lite
 set -euo pipefail
 
-VPS_HOST="200.234.230.254"
-VPS_USER="root"
-BOOT_USER="${USER:-admin}"
-HOME_DIR="${HOME:-/home/admin}"
+# --- Parámetros por defecto (puedes cambiarlos aquí si quieres) ---
+VPS_HOST_DEFAULT="200.234.230.254"
+VPS_USER_DEFAULT="root"
+AUDIO_ROOT="$HOME/Lumen"
 CONF_DIR="/etc/lumen"
-LUMEN_DIR="$HOME_DIR/Lumen"
+CONF_FILE="$CONF_DIR/lumen.conf"
 
 echo "[1/9] Paquetes base…"
-sudo apt update
-sudo apt install -y autossh openssh-client openssh-server python3 python3-pip vlc python3-vlc alsa-utils jq rsync
+sudo apt-get update -y
+sudo apt-get install -y autossh openssh-client openssh-server python3 python3-pip vlc python3-vlc alsa-utils jq rsync sshpass
+
+# Asegura sshd local (por si viene deshabilitado)
+sudo systemctl enable --now ssh
 
 echo "[2/9] Clave SSH local…"
-mkdir -p "$HOME_DIR/.ssh" && chmod 700 "$HOME_DIR/.ssh"
-if [[ ! -f "$HOME_DIR/.ssh/id_ed25519" ]]; then
-  ssh-keygen -t ed25519 -f "$HOME_DIR/.ssh/id_ed25519" -N "" -C "${BOOT_USER}@$(hostname -s)"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+  mkdir -p "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "admin@$(hostname -s)"
 fi
-chmod 600 "$HOME_DIR/.ssh/id_ed25519"
-chmod 644 "$HOME_DIR/.ssh/id_ed25519.pub"
+
+# --- Pregunta o toma variables para el VPS ---
+read -rp "IP/host del VPS [${VPS_HOST_DEFAULT}]: " VPS_HOST_IN || true
+VPS_HOST="${VPS_HOST_IN:-$VPS_HOST_DEFAULT}"
+
+read -rp "Usuario del VPS [${VPS_USER_DEFAULT}]: " VPS_USER_IN || true
+VPS_USER="${VPS_USER_IN:-$VPS_USER_DEFAULT}"
 
 echo "[3/9] Autorizar Pi→VPS (una vez)…"
-ssh-copy-id -o StrictHostKeyChecking=accept-new -i "$HOME_DIR/.ssh/id_ed25519.pub" ${VPS_USER}@${VPS_HOST} || true
+/usr/bin/ssh-copy-id -i "$HOME/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
 
 echo "[4/9] Obtener/reciclar DEVICE_ID y PORT desde el VPS…"
-DEVICE_ID=""; PORT=""
-if [[ -f "$CONF_DIR/lumen.conf" ]]; then
-  DEVICE_ID=$(sed -n 's/^DEVICE_ID="\([^"]*\)"/\1/p' "$CONF_DIR/lumen.conf" || true)
-  PORT=$(sed -n 's/^PORT="\([^"]*\)"/\1/p' "$CONF_DIR/lumen.conf" || true)
+ASSIGN_OUT="$(ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" "/usr/local/bin/lumen-assign.sh $(hostname -s)")"
+# Espera algo como:  DEVICE_ID=Box-00 PORT=2201
+DEVICE_ID="$(awk '{for(i=1;i<=NF;i++){if($i~^"DEVICE_ID="){split($i,a,"=");print a[2]}}}' <<<"$ASSIGN_OUT")"
+PORT="$(awk '{for(i=1;i<=NF;i++){if($i~^"PORT="){split($i,a,"=");print a[2]}}}' <<<"$ASSIGN_OUT")"
+
+if [[ -z "${DEVICE_ID:-}" || -z "${PORT:-}" ]]; then
+  echo "ERROR: no pude obtener asignación del VPS. Salida: $ASSIGN_OUT" >&2
+  exit 1
 fi
-if [[ -n "${DEVICE_ID:-}" && -n "${PORT:-}" ]]; then
-  echo "Reutilizando: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
-else
-  PUBKEY_B64=$(base64 -w0 < "$HOME_DIR/.ssh/id_ed25519.pub")
-  ASSIGN=$(ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} "/usr/local/bin/lumen-assign.sh --register --pubkey-b64 \"$PUBKEY_B64\"")
-  eval "$ASSIGN"
-  echo "Asignado: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
-fi
+echo "Reutilizando: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
 
 echo "[5/9] Guardar configuración…"
 sudo mkdir -p "$CONF_DIR"
-sudo tee "$CONF_DIR/lumen.conf" >/dev/null <<CFG
+sudo tee "$CONF_FILE" >/dev/null <<EOF
+# /etc/lumen/lumen.conf
 DEVICE_ID="${DEVICE_ID}"
 VPS_HOST="${VPS_HOST}"
 VPS_USER="${VPS_USER}"
 PORT="${PORT}"
+# Volumen por defecto (0-100) para el reproductor (si lo usas después)
 VOLUME="90"
+# Programación estacional (placeholders; no usados en este instalador)
 XMAS_START="12-01"
 XMAS_END="01-07"
 SEASON_START=""
 SEASON_END=""
 ADS_SOURCE="Anuncios"
-CFG
+EOF
 
 echo "[6/9] Autorizar VPS→Pi por túnel…"
-touch "$HOME_DIR/.ssh/authorized_keys" && chmod 600 "$HOME_DIR/.ssh/authorized_keys"
-ssh -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST} \
-  "cat /srv/lumen/vps_root_id_ed25519.pub" >> "$HOME_DIR/.ssh/authorized_keys" || true
-awk '!seen[$0]++' "$HOME_DIR/.ssh/authorized_keys" > "$HOME_DIR/.ssh/authorized_keys.tmp" && mv "$HOME_DIR/.ssh/authorized_keys.tmp" "$HOME_DIR/.ssh/authorized_keys"
-chown -R ${BOOT_USER}:${BOOT_USER} "$HOME_DIR/.ssh"
+# Permitimos que el VPS entre como root al puerto reverso sin preguntar hostkey
+# (El VPS agregará esta llave a su known_hosts cuando se conecte la primera vez.)
+cat "$HOME/.ssh/id_ed25519.pub" | ssh "${VPS_USER}@${VPS_HOST}" "mkdir -p /srv/lumen/keys && cat > /srv/lumen/keys/${DEVICE_ID}.pub"
 
 echo "[7/9] Carpetas de audio…"
-mkdir -p "$LUMEN_DIR"/{Canciones,Anuncios,Navideña,Temporada}
+mkdir -p "${AUDIO_ROOT}/"{Canciones,Anuncios,Navideña,Temporada}
 
 echo "[8/9] Servicios systemd…"
-sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<'UNIT'
+# --- servicio autossh (túnel reverso) ---
+sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<UNIT
 [Unit]
-Description=AutoSSH reverse tunnel to VPS
+Description=Lumen reverse SSH tunnel to VPS
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=/etc/lumen/lumen.conf
-User=admin
-ExecStart=/usr/bin/autossh -M 0 -N \
-  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
-  -i /home/admin/.ssh/id_ed25519 \
-  -R ${PORT}:127.0.0.1:22 ${VPS_USER}@${VPS_HOST}
+Environment=AUTOSSH_GATETIME=0
+Environment=AUTOSSH_POLL=30
+Environment=AUTOSSH_FIRST_POLL=30
+Type=simple
+User=${USER}
+ExecStart=/usr/bin/autossh -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -R 127.0.0.1:${PORT}:127.0.0.1:22 ${VPS_USER}@${VPS_HOST}
 Restart=always
 RestartSec=5
 
@@ -85,77 +94,60 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
+# --- agente de heartbeat (script + service + timer) ---
 sudo tee /usr/local/bin/lumen-agent.sh >/dev/null <<'AGENT'
 #!/usr/bin/env bash
 set -euo pipefail
-CONF="/etc/lumen/lumen.conf"; source "$CONF"
-STAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-logger -t lumen-agent "Enviando heartbeat: DEVICE_ID=${DEVICE_ID} -> ${VPS_USER}@${VPS_HOST}"
-set +e
-printf "%s" "$STAMP" | ssh \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=accept-new \
-  -o ConnectTimeout=5 \
-  -o ServerAliveInterval=10 \
-  -o ServerAliveCountMax=1 \
-  -i /home/admin/.ssh/id_ed25519 \
-  "${VPS_USER}@${VPS_HOST}" "cat > /srv/lumen/heartbeats/${DEVICE_ID}.ts"
-rc=$?
-set -e
-if [ "$rc" -eq 0 ]; then
-  logger -t lumen-agent "Heartbeat OK: ${STAMP}"
-else
-  logger -t lumen-agent "Heartbeat FAIL (rc=${rc})"
-fi
+CONF="/etc/lumen/lumen.conf"
+source "$CONF"
+
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Crea carpeta y escribe timestamp en el VPS
+ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+  "mkdir -p /srv/lumen/heartbeats && printf '%s\n' '${STAMP}' > /srv/lumen/heartbeats/${DEVICE_ID}.ts" \
+  && logger -t lumen-agent "Heartbeat OK: ${STAMP}" \
+  || logger -t lumen-agent "Heartbeat FAIL"
 AGENT
 sudo chmod +x /usr/local/bin/lumen-agent.sh
 
 sudo tee /etc/systemd/system/lumen-agent.service >/dev/null <<'UNIT'
 [Unit]
-Description=Lumen Agent (heartbeat)
+Description=Lumen heartbeat agent
 After=network-online.target
-Wants=network-online.target
 
 [Service]
-User=admin
 Type=oneshot
 ExecStart=/usr/local/bin/lumen-agent.sh
-StandardOutput=journal
-StandardError=journal
 UNIT
 
 sudo tee /etc/systemd/system/lumen-agent.timer >/dev/null <<'UNIT'
 [Unit]
-Description=Lumen Agent Timer
+Description=Run Lumen heartbeat every minute
+
 [Timer]
-OnBootSec=30
+OnBootSec=60
 OnUnitActiveSec=60
 Unit=lumen-agent.service
-Persistent=true
+
 [Install]
 WantedBy=timers.target
 UNIT
 
 echo "[9/9] Sudoers (NOPASSWD) para broadcast seguro…"
-# reboot sin password
-echo 'admin ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/lumen-reboot >/dev/null
-# actualización desde repo (mínimos necesarios)
-cat <<'EOF' | sudo tee /etc/sudoers.d/lumen-update >/dev/null
-admin ALL=(ALL) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/systemctl, /usr/bin/ssh-copy-id, /usr/bin/install, /usr/bin/curl, /usr/bin/chmod, /usr/bin/mkdir, /usr/bin/tee, /usr/bin/bash, /usr/bin/sh
-EOF
-sudo chmod 440 /etc/sudoers.d/lumen-reboot /etc/sudoers.d/lumen-update
+# Permite a root del VPS ejecutar comandos sin password a través del túnel (solo necesarios para lumen-broadcast)
+echo "${USER} ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010_${USER}_nopasswd >/dev/null
+sudo chmod 440 /etc/sudoers.d/010_${USER}_nopasswd
 
 echo "[Activando servicios…]"
 sudo systemctl daemon-reload
-sudo systemctl enable autossh-lumen.service lumen-agent.timer
-sudo systemctl restart autossh-lumen.service
-sudo systemctl restart lumen-agent.timer
+sudo systemctl enable --now autossh-lumen.service
+sudo systemctl enable --now lumen-agent.timer
 
-/usr/local/bin/lumen-agent.sh || true
-ssh -o StrictHostKeyChecking=accept-new -i "$HOME_DIR/.ssh/id_ed25519" ${VPS_USER}@${VPS_HOST} \
-  "test -s /srv/lumen/heartbeats/${DEVICE_ID}.ts && tail -n1 /srv/lumen/heartbeats/${DEVICE_ID}.ts || echo 'NO_HEARTBEAT'"
+# Primer heartbeat inmediato (no bloqueante si falla)
+if /usr/local/bin/lumen-agent.sh 2>/dev/null; then
+  :
+fi
 
-echo "✅ Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}
-Conéctate desde el VPS con:
-  ssh -p ${PORT} admin@localhost
-"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)✅ Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}"
+echo "Conéctate desde el VPS con:"
+echo "  ssh -p ${PORT} ${USER}@localhost"
