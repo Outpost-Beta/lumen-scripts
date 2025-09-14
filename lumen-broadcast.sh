@@ -1,133 +1,88 @@
 #!/usr/bin/env bash
+# lumen-broadcast.sh  (VPS) • Ejecuta un comando en todas las Pis registradas
+# Uso:
+#   lumen-broadcast.sh [-u] [-P N] [-t SEC] -- <comando...>
+#     -u        : solo las que están UP (heartbeat <120s)
+#     -P N      : paralelismo (default 4)
+#     -t SEC    : timeout por host (default 120)
+#
+# Ejemplo:
+#   lumen-broadcast.sh -u -P 1 -- 'hostnamectl --static'
+#   lumen-broadcast.sh -u -- bash -lc 'sudo apt-get update -y && sudo apt-get -y upgrade'
+
 set -euo pipefail
 
-# Ejecuta un comando en muchas Raspberry Pi (vía túneles localhost:PUERTO)
-# Requiere que ya esté instalado el lado VPS (devices.tsv, heartbeats, etc.)
-#
-# Uso:
-#   lumen-broadcast.sh [opciones] -- <comando y args>
-#
-# Opciones:
-#   -u, --up-only        Solo a dispositivos con heartbeat reciente (<=120s)
-#   -m, --match REGEX    Filtra DEVICE_ID por REGEX (e.g., '^Box-0[0-3]$')
-#   -P, --parallel N     Concurrencia (default: 4)
-#   -t, --timeout SEC    Timeout por equipo (default: 15)
-#   -d, --dry-run        Muestra a quién le pegaría, sin ejecutar
-#   -h, --help           Ayuda
-
 CONF="/etc/lumen-vps.conf"
-[[ -f "$CONF" ]] || { echo "No existe $CONF. ¿Instalaste el VPS?"; exit 1; }
-# shellcheck disable=SC1090
-source "$CONF"
+source "$CONF" 2>/dev/null || { echo "No existe $CONF"; exit 1; }
 
-TSV="${DEVICES_TSV:-/srv/lumen/devices.tsv}"
-HEART="/srv/lumen/heartbeats"
+ONLY_UP=0
+PARALLEL=4
+TIMEOUT=120
 
-UP_ONLY=false
-MATCH_REGEX=""
-PAR=4
-TIMEOUT=15
-DRY=false
-
-print_help() {
-  grep '^#' "$0" | sed 's/^# \{0,1\}//'
-}
-
-# Parse args
-ARGS=()
+# Parseo de flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -u|--up-only) UP_ONLY=true; shift;;
-    -m|--match) MATCH_REGEX="$2"; shift 2;;
-    -P|--parallel) PAR="$2"; shift 2;;
-    -t|--timeout) TIMEOUT="$2"; shift 2;;
-    -d|--dry-run) DRY=true; shift;;
-    -h|--help) print_help; exit 0;;
-    --) shift; ARGS+=("$@"); break;;
-    *) ARGS+=("$1"); shift;;
-  esac
+    -u) ONLY_UP=1; shift ;;
+    -P) PARALLEL="${2:-4}"; shift 2 ;;
+    -t) TIMEOUT="${2:-120}"; shift 2 ;;
+    --) shift; break ;;
+    *) echo "Flag desconocido: $1"; exit 1 ;;
+  fi
 done
 
-if [[ ${#ARGS[@]} -eq 0 ]]; then
-  echo "Falta comando. Ejemplo: lumen-broadcast.sh -u -- 'hostnamectl --static'"
-  exit 2
-fi
+[[ $# -gt 0 ]] || { echo "Falta el comando a ejecutar. Usa -- <comando>"; exit 1; }
+CMD=( "$@" )
 
-CMD=("${ARGS[@]}")
-
-[[ -f "$TSV" ]] || { echo "No existe $TSV"; exit 1; }
+# Carga lista de objetivos
+[[ -f "$DEVICES_TSV" ]] || { echo "No existe $DEVICES_TSV"; exit 0; }
 
 now=$(date -u +%s)
-list=()
+targets=()
 
-while IFS=$'\t' read -r dev port; do
-  [[ -z "${dev:-}" || "$dev" =~ ^# ]] && continue
-  if [[ -n "$MATCH_REGEX" && ! "$dev" =~ $MATCH_REGEX ]]; then
-    continue
-  fi
-  if $UP_ONLY; then
-    f="$HEART/$dev.ts"
-    if [[ ! -f "$f" ]]; then
+while read -r DEVICE_ID PORT HOSTNAME; do
+  [[ -z "${DEVICE_ID:-}" ]] && continue
+  if (( ONLY_UP )); then
+    hb="/srv/lumen/heartbeats/${DEVICE_ID}.ts"
+    if [[ -f "$hb" ]]; then
+      ts=$(cat "$hb")
+      last=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+      age=$((now - last))
+      (( age < 120 )) || continue
+    else
       continue
     fi
-    ts=$(cat "$f")
-    last=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
-    age=$((now-last))
-    (( age <= 120 )) || continue
   fi
-  list+=("$dev:$port")
-done < "$TSV"
+  targets+=( "${DEVICE_ID}:${PORT}" )
+done < "$DEVICES_TSV"
 
-if [[ ${#list[@]} -eq 0 ]]; then
-  echo "No hay dispositivos que coincidan con los filtros."
+# Salida si no hay objetivos
+if (( ${#targets[@]} == 0 )); then
+  echo "Sin objetivos."
   exit 0
 fi
 
-echo "Objetivos (${#list[@]}): ${list[*]}" | sed 's/ /, /g'
+echo "Objetivos, (${#targets[@]}):, ${targets[*]// /, }"
 
-if $DRY; then
-  echo "[dry-run] No se ejecuta ningún comando."
-  exit 0
-fi
-
-# Semáforo de concurrencia simple
-active=0
-rc_all=0
-
+# Función para ejecutar por host
 run_one() {
-  local devport="$1"; shift
-  local dev="${devport%%:*}"
-  local port="${devport##*:}"
+  local pair="$1"
+  local dev="${pair%%:*}"
+  local port="${pair##*:}"
 
-  echo "[$dev] -> ssh -p ${port} admin@localhost -- ${*}"
-  # Usa StrictHostKeyChecking=accept-new vía ~/.ssh/config si lo añadiste en el installer;
-  # por compatibilidad lo forzamos también aquí:
-  if output=$(timeout "${TIMEOUT}" ssh -o StrictHostKeyChecking=accept-new -p "${port}" admin@localhost -- "$@" 2>&1); then
-    echo "[$dev] [OK]"
-    echo "----- [$dev] STDOUT -----"
-    [[ -n "$output" ]] && echo "$output"
+  echo "[${dev}] -> ssh -p ${port} admin@localhost -- ${CMD[*]}"
+  if output=$(timeout "${TIMEOUT}" ssh -p "${port}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new admin@localhost -- "${CMD[@]}" 2>&1); then
+    echo "[${dev}] [OK]"
+    [[ -n "$output" ]] && { echo "----- [${dev}] OUTPUT -----"; echo "$output"; }
   else
-    status=$?
-    echo "[$dev] [FAIL] rc=${status}"
-    echo "----- [$dev] STDERR -----"
-    [[ -n "$output" ]] && echo "$output" 1>&2
-    return "$status"
+    rc=$?
+    echo "[${dev}] [FAIL] rc=${rc}"
+    [[ -n "$output" ]] && { echo "----- [${dev}] ERROR -----"; echo "$output"; }
   fi
 }
 
-for dp in "${list[@]}"; do
-  run_one "$dp" "${CMD[@]}" &
-  active=$((active+1))
-  if (( active >= PAR )); then
-    if ! wait -n; then rc_all=1; fi
-    active=$((active-1))
-  fi
-done
+export -f run_one
+export TIMEOUT CMD
 
-# Espera a que terminen todos
-while (( active > 0 )); do
-  if ! wait -n; then rc_all=1; fi
-  active=$((active-1))
-done
+# Ejecuta en paralelo con xargs
+printf "%s\n" "${targets[@]}" | xargs -I{} -P "${PARALLEL}" bash -lc 'run_one "$@"' _ {}
 
-exit "$rc_all"
