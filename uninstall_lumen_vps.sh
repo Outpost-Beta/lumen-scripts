@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
+# uninstall_lumen_vps.sh • Limpieza completa del VPS
+
 set -euo pipefail
 
-echo "[VPS] Eliminando estado y configuraciones de Lumen…"
+echo "[VPS] Deteniendo listeners (si los hubiera)…"
+
+echo "[VPS] Eliminando inventario/estado…"
+rm -rf /srv/lumen/heartbeats || true
+rm -rf /srv/lumen/keys || true
+rm -f  /srv/lumen/devices.tsv || true
 rm -rf /srv/lumen
 
-rm -f /usr/local/bin/lumen-assign.sh \
-      /usr/local/bin/lumen-list.sh \
-      /usr/local/bin/lumen-check.sh 2>/dev/null || true
+echo "[VPS] Eliminando utilidades instaladas…"
+/bin/rm -f /usr/local/bin/lumen-assign.sh \
+          /usr/local/bin/lumen-list.sh \
+          /usr/local/bin/lumen-broadcast.sh || true
 
-rm -f /etc/lumen-vps.conf
+echo "[VPS] Eliminando configuración…"
+/bin/rm -f /etc/lumen-vps.conf || true
 
-# (Opcional) borra claves locales del VPS
-rm -f /root/.ssh/id_ed25519 /root/.ssh/id_ed25519.pub
-
-# Revertir ajustes en sshd si se agregaron
+echo "[VPS] (Opcional) revertir ajustes mínimos de sshd que agregamos"
 SSHD="/etc/ssh/sshd_config"
 if [ -f "$SSHD" ]; then
   sed -i '/^AllowTcpForwarding yes$/d' "$SSHD" || true
@@ -22,4 +28,4 @@ if [ -f "$SSHD" ]; then
   systemctl restart ssh || true
 fi
 
-echo "[VPS] Limpieza completa."
+echo "[VPS] Listo: VPS limpio."
