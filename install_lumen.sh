@@ -1,258 +1,201 @@
 #!/usr/bin/env bash
-# install_lumen.sh — Provisiona una Raspberry Pi (Bookworm, headless) como “Caja Lumen”
-# - Túnel SSH inverso vía autossh (sin abrir puertos)
-# - Asignación determinística (Box-00@2201, Box-01@2202, …) desde el VPS
-# - Heartbeat cada 60s visible en el VPS
-# - Carpetas de audio ~/Lumen/{Canciones,Anuncios,Navideña,Temporada}
-# - Integra OneDrive (abraunegg) cada 5 min si existe bundle en el VPS
+# install_lumen.sh — Instalador de la caja Lumen (Raspberry Pi, Bookworm headless)
+# - Crea/usa clave SSH local
+# - Autoriza Pi -> VPS (ssh-copy-id)  [pedirá la contraseña del VPS solo 1 vez]
+# - Pide/recicla DEVICE_ID y PORT en el VPS (lumen-assign.sh)
+# - Instala servicios systemd: autossh (túnel reverso) + agent (heartbeat)
+# - Autoriza VPS -> Pi agregando la clave pública del VPS al authorized_keys de admin
+# - ARRANCA servicios inmediatamente (primer latido automático)
 
 set -euo pipefail
 
-# --- Parámetros por defecto (se pueden sobreescribir con /etc/lumen/lumen.conf) ---
-VPS_HOST="${LUMEN_VPS_HOST:-200.234.230.254}"
-VPS_USER="${LUMEN_VPS_USER:-root}"
+# --- Parámetros por defecto (los puedes cambiar aquí si quieres) ---
+VPS_HOST="${VPS_HOST:-200.234.230.254}"
+VPS_USER="${VPS_USER:-root}"
+DEVICE_PREFIX="${DEVICE_PREFIX:-Box}"
+
+# --- Usuario local ---
+ME_USER="$(id -un)"
+HOME_DIR="$HOME"
+
+if [[ "$ME_USER" != "admin" ]]; then
+  echo "[WARN] Estás instalando como '$ME_USER'. Este script asume el usuario 'admin'."
+  echo "       Continuará, pero verifica rutas si cambiaste el usuario por defecto."
+fi
+
+echo "[1/9] Paquetes base…"
+sudo apt-get update -y
+sudo apt-get install -y \
+  autossh openssh-client openssh-server jq rsync curl \
+  python3 python3-pip vlc python3-vlc alsa-utils
+
+echo "[2/9] Clave SSH local…"
+mkdir -p "$HOME_DIR/.ssh"
+chmod 700 "$HOME_DIR/.ssh"
+if [[ ! -f "$HOME_DIR/.ssh/id_ed25519" ]]; then
+  ssh-keygen -t ed25519 -N "" -f "$HOME_DIR/.ssh/id_ed25519"
+fi
+
+PUBKEY="$(cat "$HOME_DIR/.ssh/id_ed25519.pub")"
+echo "IP/host del VPS [$VPS_HOST]: $VPS_HOST"
+echo "Usuario del VPS  [$VPS_USER]: $VPS_USER"
+
+echo "[3/9] Autorizar Pi→VPS (una vez)…"
+# Pide pass del VPS solo en la primera caja; luego ya queda por llave
+ssh-copy-id -i "$HOME_DIR/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
+
+# --- Config local ---
+CONF_DIR="/etc/lumen"
+CONF_FILE="$CONF_DIR/lumen.conf"
+sudo mkdir -p "$CONF_DIR"
+
+# Si ya hay config, la reutilizamos (idempotente)
 DEVICE_ID=""
 PORT=""
-VOLUME="${LUMEN_VOLUME:-90}"
-XMAS_START="${LUMEN_XMAS_START:-12-01}"
-XMAS_END="${LUMEN_XMAS_END:-01-07}"
-SEASON_START="${LUMEN_SEASON_START:-}"
-SEASON_END="${LUMEN_SEASON_END:-}"
-ADS_SOURCE="${LUMEN_ADS_SOURCE:-Anuncios}"
 
-CONF_DIR="/etc/lumen"
-CONF_FILE="${CONF_DIR}/lumen.conf"
-AGENT_BIN="/usr/local/bin/lumen-agent.sh"
+if [[ -f "$CONF_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONF_FILE" || true
+  DEVICE_ID="${DEVICE_ID:-}"
+  PORT="${PORT:-}"
+fi
 
-require_rootless() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    echo "Ejecuta este instalador como tu usuario normal (p.ej. 'admin'), NO como root."
-    exit 1
-  fi
-}
-require_sudo() {
-  if ! sudo -n true 2>/dev/null; then
-    echo "Se requiere 'sudo'. Te pediré contraseña cuando sea necesario."
-  fi
-}
-
-apt_install() {
-  echo "[1/9] Paquetes base…"
-  sudo apt-get update -y
-  sudo apt-get install -y \
-    autossh openssh-client openssh-server \
-    python3 python3-pip jq rsync alsa-utils vlc python3-vlc \
-    curl git
-}
-
-ensure_ssh_key() {
-  echo "[2/9] Clave SSH local…"
-  mkdir -p "$HOME/.ssh"
-  chmod 700 "$HOME/.ssh"
-  if [[ ! -f "$HOME/.ssh/id_ed25519" ]]; then
-    ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N "" -C "$(whoami)@$(hostnamectl --static)"
-  fi
-}
-
-load_or_init_conf() {
-  echo "[3/9] Configuración local…"
-  sudo mkdir -p "$CONF_DIR"
-  if [[ -f "$CONF_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$CONF_FILE"
+echo "[4/9] Obtener/reciclar DEVICE_ID y PORT desde el VPS…"
+if [[ -n "${DEVICE_ID}" && -n "${PORT}" ]]; then
+  echo "Reutilizando: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
+else
+  # Pedimos asignación al VPS (usa lumen-assign.sh en el VPS)
+  ASSIGN_RAW="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" "lumen-assign.sh ${DEVICE_PREFIX}")" || true
+  # Soportar salida en formato clave=valor o JSON
+  if echo "$ASSIGN_RAW" | grep -q 'DEVICE_ID='; then
+    DEVICE_ID="$(echo "$ASSIGN_RAW" | awk -F= '/DEVICE_ID=/{print $2}')"
+    PORT="$(echo "$ASSIGN_RAW" | awk -F= '/PORT=/{print $2}')"
   else
-    cat <<CFG | sudo tee "$CONF_FILE" >/dev/null
-DEVICE_ID="${DEVICE_ID}"
-VPS_HOST="${VPS_HOST}"
-VPS_USER="${VPS_USER}"
-PORT="${PORT}"
-VOLUME="${VOLUME}"
-XMAS_START="${XMAS_START}"
-XMAS_END="${XMAS_END}"
-SEASON_START="${SEASON_START}"
-SEASON_END="${SEASON_END}"
-ADS_SOURCE="${ADS_SOURCE}"
-CFG
-    sudo chmod 644 "$CONF_FILE"
+    # Intento JSON: {"device_id":"Box-00","port":2201}
+    DEVICE_ID="$(echo "$ASSIGN_RAW" | jq -r '.device_id // empty')"
+    PORT="$(echo "$ASSIGN_RAW" | jq -r '.port // empty')"
   fi
-}
-
-authorize_pi_to_vps() {
-  echo "[4/9] Autorizar Pi→VPS (ssh-copy-id, una sola vez)…"
-  # Intentará agregar clave si aún no existe en el VPS (puede pedir PWD del VPS)
-  /usr/bin/ssh-copy-id -i "$HOME/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
-}
-
-assign_device_port() {
-  echo "[5/9] Obtener/reciclar DEVICE_ID y PORT desde el VPS…"
-  local host
-  host="$(hostnamectl --static)"
-  # Llama al asignador del VPS; debe devolver "DEVICE_ID=... PORT=..."
-  # Nota: lumen-assign.sh vive en el VPS y usa /srv/lumen/devices.tsv
-  local out
-  if ! out="$(ssh -o StrictHostKeyChecking=accept-new -i "$HOME/.ssh/id_ed25519" "${VPS_USER}@${VPS_HOST}" "lumen-assign.sh '${host}'" 2>/dev/null)"; then
-    echo "No pude contactar al asignador en el VPS. Revisa conectividad."
-    exit 1
-  fi
-  # Parseo robusto
-  DEVICE_ID="$(awk '{for(i=1;i<=NF;i++){ if($i ~ /^DEVICE_ID=/){split($i,a,"="); print a[2] }}}' <<<"$out")"
-  PORT="$(awk '{for(i=1;i<=NF;i++){ if($i ~ /^PORT=/){split($i,a,"="); print a[2] }}}' <<<"$out")"
-
   if [[ -z "${DEVICE_ID}" || -z "${PORT}" ]]; then
-    echo "Asignación inválida desde VPS: $out"
+    echo "[ERROR] No pude obtener asignación del VPS. Salida fue:"
+    echo "$ASSIGN_RAW"
     exit 1
   fi
-  echo "Reutilizando/Asignado: DEVICE_ID=${DEVICE_ID} PORT=${PORT}"
+fi
 
-  # Persistir
-  sudo tee "$CONF_FILE" >/dev/null <<CFG
+echo "[5/9] Guardar configuración…"
+TMP_CONF="$(mktemp)"
+cat > "$TMP_CONF" <<EOF
+# /etc/lumen/lumen.conf
 DEVICE_ID="${DEVICE_ID}"
 VPS_HOST="${VPS_HOST}"
 VPS_USER="${VPS_USER}"
 PORT="${PORT}"
-VOLUME="${VOLUME}"
-XMAS_START="${XMAS_START}"
-XMAS_END="${XMAS_END}"
-SEASON_START="${SEASON_START}"
-SEASON_END="${SEASON_END}"
-ADS_SOURCE="${ADS_SOURCE}"
-CFG
-}
 
-setup_autossh_service() {
-  echo "[6/9] Servicio autossh (túnel inverso)…"
-  sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<UNIT
-[Unit]
-Description=Lumen reverse SSH tunnel (Pi -> VPS)
-After=network-online.target
-Wants=network-online.target
+# Parámetros de reproducción (puedes afinarlos luego)
+VOLUME="90"
+XMAS_START="12-01"
+XMAS_END="01-07"
+SEASON_START=""
+SEASON_END=""
+ADS_SOURCE="Anuncios"
+EOF
+sudo mv "$TMP_CONF" "$CONF_FILE"
+sudo chmod 644 "$CONF_FILE"
 
-[Service]
-Environment=AUTOSSH_GATETIME=0
-Environment=AUTOSSH_PORT=0
-ExecStart=/usr/bin/autossh -N -M 0 \\
-  -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" \\
-  -o "StrictHostKeyChecking=accept-new" \\
-  -i /home/$(whoami)/.ssh/id_ed25519 \\
-  -R ${PORT}:localhost:22 ${VPS_USER}@${VPS_HOST}
-Restart=always
-RestartSec=5
+echo "[6/9] Autorizar VPS→Pi por túnel (para NO pedir password)…"
+# Traer la clave pública del VPS y agregarla a authorized_keys del usuario actual
+if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" 'test -r /root/.ssh/id_ed25519.pub'; then
+  mkdir -p "$HOME_DIR/.ssh"
+  chmod 700 "$HOME_DIR/.ssh"
+  ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" 'cat /root/.ssh/id_ed25519.pub' >> "$HOME_DIR/.ssh/authorized_keys" || true
+  chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+  echo "[SSH] Autorizada clave del VPS para acceso inverso sin contraseña."
+else
+  echo "[SSH] Aviso: no encontré /root/.ssh/id_ed25519.pub en el VPS. El acceso VPS->Pi podría pedir password."
+fi
 
-[Install]
-WantedBy=multi-user.target
-UNIT
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now autossh-lumen.service
-}
+echo "[7/9] Carpetas audio…"
+mkdir -p "$HOME_DIR/Lumen/Canciones" "$HOME_DIR/Lumen/Anuncios" "$HOME_DIR/Lumen/Navideña" "$HOME_DIR/Lumen/Temporada"
 
-setup_agent() {
-  echo "[7/9] Agente de heartbeat…"
-  sudo tee "$AGENT_BIN" >/dev/null <<'AGENT'
+echo "[8/9] Servicios systemd…"
+
+# --- Binario del agente (heartbeat) ---
+sudo tee /usr/local/bin/lumen-agent.sh >/dev/null <<'AGENT'
 #!/usr/bin/env bash
 set -euo pipefail
-CONF="/etc/lumen/lumen.conf"
-source "$CONF"
-STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# Crea carpeta y escribe timestamp de latido en el VPS
-ssh -o StrictHostKeyChecking=accept-new -i "/home/${SUDO_USER:-$USER}/.ssh/id_ed25519" "${VPS_USER}@${VPS_HOST}" \
-"mkdir -p /srv/lumen/heartbeats && printf '%s\n' '${STAMP}' > /srv/lumen/heartbeats/${DEVICE_ID}.ts" \
-  && logger -t lumen-agent "Heartbeat OK: ${STAMP}" \
-  || logger -t lumen-agent "Heartbeat FAIL"
-AGENT
-  sudo chmod +x "$AGENT_BIN"
+source /etc/lumen/lumen.conf
 
-  sudo tee /etc/systemd/system/lumen-agent.service >/dev/null <<UNIT
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Asegura carpeta en VPS y escribe timestamp
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+  "mkdir -p /srv/lumen/heartbeats && echo ${STAMP} > /srv/lumen/heartbeats/${DEVICE_ID}.ts"
+AGENT
+sudo chmod +x /usr/local/bin/lumen-agent.sh
+
+# --- Servicio y timer del agente ---
+sudo tee /etc/systemd/system/lumen-agent.service >/dev/null <<'UNIT'
 [Unit]
-Description=Lumen heartbeat agent
-After=network-online.target
-Wants=network-online.target
+Description=Lumen Heartbeat Agent
 
 [Service]
 Type=oneshot
-ExecStart=${AGENT_BIN}
-User=$(whoami)
-Group=$(whoami)
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/local/bin/lumen-agent.sh
+User=admin
+Group=admin
 UNIT
 
-  sudo tee /etc/systemd/system/lumen-agent.timer >/dev/null <<UNIT
+sudo tee /etc/systemd/system/lumen-agent.timer >/dev/null <<'UNIT'
 [Unit]
-Description=Run Lumen heartbeat every minute
+Description=Run Lumen Heartbeat Agent every minute
 
 [Timer]
+OnBootSec=15s
 OnUnitActiveSec=60s
 AccuracySec=10s
-Persistent=true
 Unit=lumen-agent.service
 
 [Install]
 WantedBy=timers.target
 UNIT
 
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now lumen-agent.timer
-}
+# --- Servicio de autossh (túnel reverso) ---
+sudo tee /etc/systemd/system/autossh-lumen.service >/dev/null <<'UNIT'
+[Unit]
+Description=autossh reverse tunnel to VPS
+After=network-online.target ssh.service
+Wants=network-online.target
 
-make_audio_folders() {
-  echo "[8/9] Carpetas de audio…"
-  mkdir -p "$HOME/Lumen/Canciones" "$HOME/Lumen/Anuncios" "$HOME/Lumen/Navideña" "$HOME/Lumen/Temporada"
-}
+[Service]
+EnvironmentFile=/etc/lumen/lumen.conf
+User=admin
+Group=admin
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" \
+  -o "ExitOnForwardFailure=yes" -o "StrictHostKeyChecking=accept-new" \
+  -R 127.0.0.1:${PORT}:127.0.0.1:22 ${VPS_USER}@${VPS_HOST}
+Restart=always
+RestartSec=5
 
-sudoers_broadcast() {
-  echo "[9/9] Sudoers (NOPASSWD) para broadcast seguro…"
-  # Permite que el VPS ejecute comandos comunes sin pedir password (ajusta a tus necesidades)
-  local SNIP="/etc/sudoers.d/lumen"
-  sudo bash -c "cat > '$SNIP' <<'SUDO'
-# Permitir reinicios y onedrive sin password para el usuario actual
-$(whoami) ALL=(ALL) NOPASSWD:/usr/sbin/reboot,/usr/bin/systemctl start onedrive-lumen.service,/usr/bin/systemctl restart onedrive-lumen.timer,/usr/bin/systemctl start onedrive-lumen.timer
-SUDO"
-  sudo chmod 440 "$SNIP"
-}
+[Install]
+WantedBy=multi-user.target
+UNIT
 
-maybe_onedrive() {
-  echo "[+] Integración OneDrive (si hay bundle en VPS)…"
-  # Instala/actualiza onedrive cliente + servicio/timer
-  if [[ -x "./install_onedrive_native_pi.sh" ]]; then
-    sudo ./install_onedrive_native_pi.sh
-  fi
+echo "[9/9] Sudoers (NOPASSWD) para broadcast seguro…"
+# Permitir que 'admin' ejecute oneliners comunes sin pedir password (opcional y acotado)
+SUDO_FILE="/etc/sudoers.d/lumen-admin-nopasswd"
+echo 'admin ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/systemctl, /usr/bin/journalctl, /usr/bin/curl, /usr/bin/rsync' | sudo tee "$SUDO_FILE" >/dev/null
+sudo chmod 440 "$SUDO_FILE"
 
-  # Si en el VPS existe un bundle global, empujar tokens y arrancar
-  if ssh -o StrictHostKeyChecking=accept-new -i "$HOME/.ssh/id_ed25519" "${VPS_USER}@${VPS_HOST}" 'test -f /srv/lumen/onedrive_tokens/Lumen_bundle.tar.gz'; then
-    echo "[OneDrive] Bundle encontrado en VPS. Empujando tokens…"
-    ssh -o StrictHostKeyChecking=accept-new -i "$HOME/.ssh/id_ed25519" "${VPS_USER}@${VPS_HOST}" \
-      "lumen-push-token.sh '${DEVICE_ID}' '${PORT}'" || true
-    # Asegura timer arriba
-    sudo systemctl enable --now onedrive-lumen.timer || true
-  else
-    echo "[OneDrive] No hay bundle en el VPS. Opciones:"
-    echo "  - (Recomendado) Coloca /srv/lumen/onedrive_tokens/Lumen_bundle.tar.gz en el VPS y ejecuta:"
-    echo "      lumen-push-token.sh '${DEVICE_ID}' '${PORT}'"
-    echo "  - (Manual en esta Pi) Autoriza con:"
-    echo "      onedrive   # seguirá prompts (crea ~/.config/onedrive)"
-  fi
-}
+echo "[Activando servicios…]"
+sudo systemctl daemon-reload
+# Habilita y ARRANCA ahora mismo (primer latido automático)
+sudo systemctl enable --now autossh-lumen.service
+sudo systemctl enable --now lumen-agent.timer
+# Dispara un primer latido inmediato
+sudo systemctl start lumen-agent.service || true
 
-summary() {
-  echo
-  date -u +%Y-%m-%dT%H:%M:%SZ | sed "s/^/[OK]/"
-  echo "Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}"
-  echo "Conéctate desde el VPS con:"
-  echo "  ssh -p ${PORT} $(whoami)@localhost"
-}
-
-# --- flujo principal ---
-require_rootless
-require_sudo
-apt_install
-ensure_ssh_key
-load_or_init_conf
-authorize_pi_to_vps
-assign_device_port
-setup_autossh_service
-setup_agent
-make_audio_folders
-sudoers_broadcast
-maybe_onedrive
-summary
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "[OK]${STAMP}"
+echo "Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}"
+echo "Conéctate desde el VPS con:"
+echo "  ssh -p ${PORT} admin@localhost"
