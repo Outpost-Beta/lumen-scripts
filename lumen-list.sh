@@ -1,32 +1,28 @@
 #!/usr/bin/env bash
+# lumen-list.sh (VPS) • Muestra las Pis registradas y estado de heartbeat
+
 set -euo pipefail
 
-CONF="/etc/lumen-vps.conf"; source "$CONF"
-HEART="/srv/lumen/heartbeats"
-TSV="$DEVICES_TSV"
+CONF="/etc/lumen-vps.conf"
+source "$CONF" 2>/dev/null || { echo "No existe $CONF"; exit 1; }
 
-now_utc_s=$(date -u +%s)
+[[ -f "$DEVICES_TSV" ]] || { echo "No hay dispositivos registrados."; exit 0; }
 
-# Encabezado: quitamos Age(s) y agregamos Last Seen (Local)
-printf "%-12s %-6s %-22s %-25s %-3s\n" "DEVICE_ID" "PORT" "Last Seen (UTC)" "Last Seen (Local)" "UP?"
+now=$(date -u +%s)
 
-while IFS=$'\t' read -r dev port; do
-  [[ -z "${dev:-}" || "$dev" =~ ^# ]] && continue
-  f="$HEART/$dev.ts"
+printf "%-10s %-6s %-20s %-6s %-3s\n" "DEVICE_ID" "PORT" "Last Seen (UTC)" "Age(s)" "UP?"
 
-  if [[ -f "$f" ]]; then
-    ts=$(cat "$f")                                   # ISO en UTC, ej: 2025-09-12T02:58:56Z
-    # A UTC epoch (para calcular si está UP)
-    last_utc_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
-    # Formatos legibles
-    ts_utc="$ts"
-    ts_local=$(date -d "$ts" +"%Y-%m-%d %H:%M:%S %Z" 2>/dev/null || echo "—")
-
-    age=$(( now_utc_s - last_utc_s ))
-    up="NO"; [[ $age -le 120 ]] && up="YES"
-
-    printf "%-12s %-6s %-22s %-25s %-3s\n" "$dev" "$port" "$ts_utc" "$ts_local" "$up"
+while read -r DEVICE_ID PORT HOSTNAME; do
+  [[ -z "${DEVICE_ID:-}" ]] && continue
+  hb="/srv/lumen/heartbeats/${DEVICE_ID}.ts"
+  if [[ -f "$hb" ]]; then
+    ts=$(cat "$hb")
+    last=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+    age=$((now - last))
+    up="NO"
+    (( age < 120 )) && up="YES"
+    printf "%-10s %-6s %-20s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "$ts" "$age" "$up"
   else
-    printf "%-12s %-6s %-22s %-25s %-3s\n" "$dev" "$port" "—" "—" "NO"
+    printf "%-10s %-6s %-20s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "-" "-" "NO"
   fi
-done < "$TSV"
+done < "$DEVICES_TSV"
