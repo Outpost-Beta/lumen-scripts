@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === Parámetros y rutas ===
+# === Parámetros ===
 PI_USER="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$PI_USER" | cut -d: -f6)"
-LOCAL_DIR="$HOME_DIR/Lumen"             # Carpeta que ya usa tu player
+LOCAL_DIR="$HOME_DIR/Lumen"                 # Mantener compatibilidad con el player
 REMOTE_NAME="onedrive"
-REMOTE_PATH="Lumen"                     # Carpeta en OneDrive
+REMOTE_PATH="Lumen"
 REMOTE_URI="${REMOTE_NAME}:/${REMOTE_PATH}"
 LOG_FILE="$HOME_DIR/rclone-bisync.log"
 STATE_FLAG="/var/lib/lumen/bisync_initialized"
 
-# === 1) Paquetes base ===
+echo "[1/6] Paquetes…"
 sudo apt-get update -y
 sudo apt-get install -y rclone util-linux ca-certificates
 mkdir -p "$LOCAL_DIR"
 sudo mkdir -p "$(dirname "$STATE_FLAG")" && sudo chown "$PI_USER:$PI_USER" "$(dirname "$STATE_FLAG")"
 
-# === 2) Ignorados opcionales (.rcloneignore) ===
+echo "[2/6] .rcloneignore (común)…"
 if [[ ! -f "$LOCAL_DIR/.rcloneignore" ]]; then
   cat > "$LOCAL_DIR/.rcloneignore" <<'EOF'
 .DS_Store
@@ -29,7 +29,7 @@ Thumbs.db
 EOF
 fi
 
-# === 3) Helper: setear token headless (rclone_set_token.sh) ===
+echo "[3/6] Helper de token headless (opcional: broadcast de token)…"
 sudo tee /usr/local/bin/rclone_set_token.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -52,43 +52,36 @@ EOF
 fi
 
 chown -R "$PI_USER:$PI_USER" "$CONF_DIR"
-# Prueba ligera
 rclone lsd onedrive:/ >/dev/null 2>&1 || true
 SH
 sudo chmod +x /usr/local/bin/rclone_set_token.sh
 
-# === 4) Script de bisync con detección de 'primer run' (usa --resync) ===
+echo "[4/6] onedrive-bisync.sh (primer run con --resync)…"
 sudo tee /usr/local/bin/onedrive-bisync.sh >/dev/null <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
 PI_USER="${SUDO_USER:-$USER}"
 HOME_DIR="$(getent passwd "$PI_USER" | cut -d: -f6)"
-CONF_FILE="/etc/default/onedrive-sync"
-[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
-
-: "${RCLONE_REMOTE:?RCLONE_REMOTE no definido}"
-: "${LOCAL_DIR:?LOCAL_DIR no definido}"
-: "${LOG_FILE:?LOG_FILE no definido}"
+LOCAL_DIR="$HOME_DIR/Lumen"
+REMOTE_URI="onedrive:/Lumen"
+LOG_FILE="$HOME_DIR/rclone-bisync.log"
 STATE_FLAG="/var/lib/lumen/bisync_initialized"
-
-# Flags opcionales
-BWLIMIT="${BWLIMIT:-}"
-EXTRA_FLAGS="${EXTRA_FLAGS:-}"
-
-# Lock para evitar solapamiento
 LOCK="/run/onedrive-bisync.lock"
 
-# Primera corrida con --resync si no existe el flag
+# Flags opcionales por ambiente (si existen en /etc/default/onedrive-sync)
+BWLIMIT="$(grep -E '^BWLIMIT=' /etc/default/onedrive-sync 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+EXTRA_FLAGS="$(grep -E '^EXTRA_FLAGS=' /etc/default/onedrive-sync 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+
 if [[ ! -f "$STATE_FLAG" ]]; then
-  /usr/bin/flock -n "$LOCK" /usr/bin/rclone bisync "${LOCAL_DIR}" "${RCLONE_REMOTE}" \
+  /usr/bin/flock -n "$LOCK" /usr/bin/rclone bisync "${LOCAL_DIR}" "${REMOTE_URI}" \
     --resync --check-access --fast-list --create-empty-src-dirs \
     --filter-from "${LOCAL_DIR}/.rcloneignore" \
     --log-file "${LOG_FILE}" --log-level=INFO ${BWLIMIT} ${EXTRA_FLAGS}
   mkdir -p "$(dirname "$STATE_FLAG")"
   touch "$STATE_FLAG"
 else
-  /usr/bin/flock -n "$LOCK" /usr/bin/rclone bisync "${LOCAL_DIR}" "${RCLONE_REMOTE}" \
+  /usr/bin/flock -n "$LOCK" /usr/bin/rclone bisync "${LOCAL_DIR}" "${REMOTE_URI}" \
     --check-access --fast-list \
     --filter-from "${LOCAL_DIR}/.rcloneignore" \
     --log-file "${LOG_FILE}" --log-level=NOTICE ${BWLIMIT} ${EXTRA_FLAGS}
@@ -96,58 +89,32 @@ fi
 SH
 sudo chmod +x /usr/local/bin/onedrive-bisync.sh
 
-# === 5) Variables de entorno del sync ===
-sudo tee /etc/default/onedrive-sync >/dev/null <<EOF
-RCLONE_REMOTE="${REMOTE_URI}"
-LOCAL_DIR="${LOCAL_DIR}"
-LOG_FILE="${LOG_FILE}"
-# Opcionales:
-# BWLIMIT="--bwlimit 8M"
-# EXTRA_FLAGS="--tpslimit 10"
-EOF
+echo "[5/6] Cron cada 5 min con flock…"
+sudo tee /etc/cron.d/onedrive-bisync >/dev/null <<'CRON'
+*/5 * * * * admin /usr/bin/flock -n /run/onedrive-bisync.lock /usr/local/bin/onedrive-bisync.sh
+CRON
+sudo chmod 644 /etc/cron.d/onedrive-bisync
+sudo systemctl restart cron || sudo service cron restart || true
 
-# === 6) Unidades systemd (servicio + timer usuario=admin) ===
-sudo tee /etc/systemd/system/onedrive-bisync.service >/dev/null <<'UNIT'
-[Unit]
-Description=Rclone bisync Lumen (local ↔ OneDrive)
-After=network-online.target
-Wants=network-online.target
+echo "[6/6] Primer intento (no fatal si aún no hay token)…"
+/usr/local/bin/onedrive-bisync.sh || true
 
-[Service]
-Type=oneshot
-User=admin
-EnvironmentFile=/etc/default/onedrive-sync
-ExecStart=/usr/local/bin/onedrive-bisync.sh
-Nice=10
-IOSchedulingClass=best-effort
-IOSchedulingPriority=6
-UNIT
+cat <<MSG
 
-sudo tee /etc/systemd/system/onedrive-bisync.timer >/dev/null <<'UNIT'
-[Unit]
-Description=Ejecuta rclone-bisync cada 5 minutos
-
-[Timer]
-OnBootSec=2m
-OnUnitActiveSec=5m
-AccuracySec=30s
-Unit=onedrive-bisync.service
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-# === 7) Habilitar timer y primera corrida "suave" (sin bloquear si no hay token aún) ===
-sudo systemctl daemon-reload
-sudo systemctl enable --now onedrive-bisync.timer
-# Primer intento (si no hay token, no es fatal)
-sudo systemctl start onedrive-bisync.service || true
-
-echo "✅ OneDrive bisync instalado.
-- Remoto:     ${REMOTE_URI}
+✅ OneDrive (bisync+cron) instalado:
+- Remoto:     onedrive:/Lumen
 - Local:      ${LOCAL_DIR}
 - Log:        ${LOG_FILE}
-- Timer:      onedrive-bisync.timer (cada 5 min)
+- Cron:       /etc/cron.d/onedrive-bisync  (cada 5 min con flock)
 
-Siguiente: cargar token con rclone_set_token.sh (broadcast)."
+Autenticación:
+  a) Token único + broadcast (recomendado):
+       rclone_set_token.sh TOKEN_B64
+  b) Device code por Pi (solo consola):
+       rclone config  # onedrive / global / read-write / auto config = n
+       # autoriza en navegador con el código mostrado
+       rclone lsd onedrive:/Lumen
+
+Revisa:
+  tail -n 80 ${LOG_FILE}
+MSG
