@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
     -t) TIMEOUT="${2:-120}"; shift 2 ;;
     --) shift; break ;;
     *) echo "Flag desconocido: $1"; exit 1 ;;
-  fi
+  esac
 done
 
 [[ $# -gt 0 ]] || { echo "Falta el comando a ejecutar. Usa -- <comando>"; exit 1; }
@@ -80,9 +80,14 @@ run_one() {
   fi
 }
 
-export -f run_one
-export TIMEOUT CMD
-
-# Ejecuta en paralelo con xargs
-printf "%s\n" "${targets[@]}" | xargs -I{} -P "${PARALLEL}" bash -lc 'run_one "$@"' _ {}
-
+# Ejecutar con paralelismo usando wait -n (Bash 5+)
+active=0
+for pair in "${targets[@]}"; do
+  run_one "$pair" &
+  ((active++))
+  if (( active >= PARALLEL )); then
+    wait -n
+    ((active--))
+  fi
+done
+wait
