@@ -1,111 +1,104 @@
 #!/usr/bin/env bash
-# Instala OneDrive Free Client (abraunegg) y deja un servicio systemd (de sistema) corriendo como 'admin'
-# Modo: monitor + synchronize + download-only  (OneDrive:/Lumen -> /home/admin/Lumen)
+# install_onedrive_native_pi.sh
+# Instala el cliente OneDrive (abraunegg) y configura un servicio systemd
+# que sincroniza ~/Lumen en modo download-only para el usuario 'admin'.
 
 set -euo pipefail
 
-PI_USER="admin"
-PI_HOME="/home/${PI_USER}"
-CONF_DIR="${PI_HOME}/.config/onedrive"
-SYNC_DIR="${PI_HOME}/Lumen"
-SRC_DIR="${PI_HOME}/onedrive-src"
+USER_NAME="admin"
+HOME_DIR="/home/${USER_NAME}"
+CONF_DIR="${HOME_DIR}/.config/onedrive"
+SYNC_DIR="${HOME_DIR}/Lumen"
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Ejecuta como root: sudo $0"
-  exit 1
-fi
-id -u "${PI_USER}" >/dev/null 2>&1 || { echo "No existe el usuario ${PI_USER}"; exit 1; }
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "✋ Ejecuta como root: sudo $0"
+    exit 1
+  fi
+}
 
-echo "[1/5] Paquetes base…"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y \
-  curl git build-essential pkg-config \
-  libcurl4-openssl-dev libsqlite3-dev libdbus-1-dev \
-  ldc
+pkg_install() {
+  echo "[1/4] Paquetes base…"
+  apt-get update -y
+  # Intentar paquete precompilado
+  if ! apt-get install -y onedrive; then
+    echo "[INFO] Paquete 'onedrive' no disponible; intentando compilar desde fuente…"
+    apt-get install -y curl git build-essential pkg-config \
+                       ldc libcurl4-openssl-dev libsqlite3-dev libdbus-1-dev
+    # Compilación (ligera, funciona en Bookworm)
+    sudo -u "${USER_NAME}" bash -lc '
+      set -euo pipefail
+      rm -rf ~/onedrive-src
+      git clone https://github.com/abraunegg/onedrive.git ~/onedrive-src
+      cd ~/onedrive-src
+      ./configure
+      make
+    '
+    make -C "${HOME_DIR}/onedrive-src" install
+  fi
+}
 
-echo "[2/5] Descargar/compilar onedrive (abraunegg)…"
-# Limpia compilaciones previas del usuario para evitar conflictos
-rm -rf "${SRC_DIR}"
-sudo -u "${PI_USER}" git clone https://github.com/abraunegg/onedrive.git "${SRC_DIR}"
-pushd "${SRC_DIR}" >/dev/null
-sudo -u "${PI_USER}" ./configure
-make clean
-make
-make install
-popd >/dev/null
+prepare_dirs() {
+  echo "[2/4] Carpetas y config…"
+  mkdir -p "${SYNC_DIR}"
+  mkdir -p "${CONF_DIR}"
+  chown -R "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/.config" "${SYNC_DIR}"
 
-echo "[3/5] Configuración: sync en ${SYNC_DIR}"
-# Estructura de config para el usuario admin
-install -d -m 0755 -o "${PI_USER}" -g "${PI_USER}" "${CONF_DIR}"
-install -d -m 0755 -o "${PI_USER}" -g "${PI_USER}" "${SYNC_DIR}"
+  # Crea config si no existe (se respeta si ya hay bundle)
+  if [[ ! -f "${CONF_DIR}/config" ]]; then
+    sudo -u "${USER_NAME}" tee "${CONF_DIR}/config" >/dev/null <<'CFG'
+# Config base para Lumen (se respeta si llega un bundle)
+sync_dir = "~/.config/onedrive/../Lumen"
+download_only = "true"
+# Otras opciones útiles:
+# monitor_interval = "30"
+# skip_dir = ".*"
+CFG
+  fi
 
-# Archivos base (si luego “inyectas” un bundle, esto se sobrescribe)
-CONFIG_FILE="${CONF_DIR}/config"
-SYNC_LIST="${CONF_DIR}/sync_list"
+  # Lista de sync (opcional). Se respeta si ya existe por bundle.
+  if [[ ! -f "${CONF_DIR}/sync_list" ]]; then
+    sudo -u "${USER_NAME}" tee "${CONF_DIR}/sync_list" >/dev/null <<'SL'
+Lumen
+SL
+  fi
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-  cat > "${CONFIG_FILE}" <<EOF
-# Directorio local de sincronización
-sync_dir = "${SYNC_DIR}"
-# Sólo bajar del remoto (no sube nada desde la Pi)
-sync_direction = "down"
-# Evita borrar local ante cambios severos (seguro)
-resync = false
-EOF
-  chown "${PI_USER}:${PI_USER}" "${CONFIG_FILE}"
-  chmod 0644 "${CONFIG_FILE}"
-fi
+  chmod 700 "${HOME_DIR}/.config" "${CONF_DIR}"
+  find "${CONF_DIR}" -type f -exec chmod 600 {} \;
+  chown -R "${USER_NAME}:${USER_NAME}" "${CONF_DIR}"
+}
 
-if [[ ! -f "${SYNC_LIST}" ]]; then
-  echo "Lumen" > "${SYNC_LIST}"
-  chown "${PI_USER}:${PI_USER}" "${SYNC_LIST}"
-  chmod 0644 "${SYNC_LIST}"
-fi
-
-echo "[4/5] Servicio systemd (de sistema) como ${PI_USER}…"
-SERVICE="/etc/systemd/system/onedrive-lumen.service"
-cat > "${SERVICE}" <<'UNIT'
+install_service() {
+  echo "[3/4] Servicio systemd…"
+  cat >/etc/systemd/system/onedrive-lumen.service <<UNIT
 [Unit]
-Description=OneDrive (abraunegg) Lumen monitor (download-only) as admin
+Description=OneDrive client for Lumen (download-only)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-User=admin
-Group=admin
-# Asegura variables HOME correctas
-Environment=HOME=/home/admin
-Environment=XDG_CONFIG_HOME=/home/admin/.config
-ExecStart=/usr/local/bin/onedrive --monitor --synchronize --download-only
+User=${USER_NAME}
+ExecStart=/usr/bin/onedrive --monitor --synchronize --download-only
 Restart=always
-RestartSec=10
-Nice=10
-
-# Limita recursos un poco
-NoNewPrivileges=true
+RestartSec=10s
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-systemctl daemon-reload
-systemctl enable onedrive-lumen.service
+  systemctl daemon-reload
+  systemctl enable --now onedrive-lumen.service || true
+}
 
-echo "[5/5] Arrancando servicio (si no hay token aún, quedará a la espera)…"
-systemctl restart onedrive-lumen.service || true
+smoke_test() {
+  echo "[4/4] Prueba rápida (no fatal si aún no hay token)…"
+  sudo -u "${USER_NAME}" bash -lc 'command -v onedrive >/dev/null && onedrive --synchronize --download-only || true'
+  systemctl status onedrive-lumen.service --no-pager || true
+  echo "✅ OneDrive listo. Si ya empujaste el bundle desde el VPS, debería comenzar a sincronizar."
+}
 
-echo
-echo "✅ OneDrive instalado y servicio creado:"
-echo "  - Binario:   /usr/local/bin/onedrive"
-echo "  - Servicio:  onedrive-lumen.service (User=admin)"
-echo "  - Config:    ${CONF_DIR}/ (config, sync_list)"
-echo "  - Carpeta:   ${SYNC_DIR}"
-echo
-echo "Si vas a inyectar el token vía VPS, ya puedes hacerlo (bundle) y luego:"
-echo "  sudo systemctl restart onedrive-lumen.service"
-echo
-echo "Para ver estado/logs:"
-echo "  systemctl status --no-pager onedrive-lumen.service"
-echo "  journalctl -u onedrive-lumen.service -n 50 --no-pager"
+need_root
+pkg_install
+prepare_dirs
+install_service
+smoke_test
