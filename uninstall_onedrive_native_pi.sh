@@ -1,30 +1,54 @@
 #!/usr/bin/env bash
-# Desinstala el cliente abraunegg y borra la configuración del usuario 'admin'
+# uninstall_onedrive_native_pi.sh
+# Elimina cliente OneDrive (abraunegg) y servicio onedrive-lumen de la Pi.
 
 set -euo pipefail
 
-PI_USER="admin"
-PI_HOME="/home/${PI_USER}"
-CONF_DIR="${PI_HOME}/.config/onedrive"
-SRC_DIR="${PI_HOME}/onedrive-src"
-SERVICE="/etc/systemd/system/onedrive-lumen.service"
+USER_NAME="admin"
+HOME_DIR="/home/${USER_NAME}"
+CONF_DIR="${HOME_DIR}/.config/onedrive"
+SYNC_DIR="${HOME_DIR}/Lumen"
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Ejecuta como root: sudo $0"
-  exit 1
-fi
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "✋ Ejecuta como root: sudo $0"
+    exit 1
+  fi
+}
 
-echo "[1/3] Deteniendo y deshabilitando servicio…"
-systemctl stop onedrive-lumen.service 2>/dev/null || true
-systemctl disable onedrive-lumen.service 2>/dev/null || true
-rm -f "${SERVICE}" || true
-systemctl daemon-reload || true
+remove_service() {
+  echo "[1/4] Eliminando servicio systemd…"
+  systemctl stop onedrive-lumen.service 2>/dev/null || true
+  systemctl disable onedrive-lumen.service 2>/dev/null || true
+  rm -f /etc/systemd/system/onedrive-lumen.service
+  systemctl daemon-reload
+}
 
-echo "[2/3] Eliminando binario y fuentes…"
-/bin/rm -f /usr/local/bin/onedrive || true
-rm -rf "${SRC_DIR}" || true
+remove_binary() {
+  echo "[2/4] Eliminando cliente onedrive…"
+  if dpkg -l | grep -q '^ii  onedrive '; then
+    apt-get remove -y onedrive
+  fi
+  rm -rf "${HOME_DIR}/onedrive-src"
+  rm -f /usr/local/bin/onedrive
+}
 
-echo "[3/3] Borrando configuración del usuario…"
-rm -rf "${CONF_DIR}" || true
+remove_config() {
+  echo "[3/4] Eliminando configuración y caché…"
+  rm -rf "${CONF_DIR}"
+  rm -rf "${HOME_DIR}/.cache/onedrive"
+}
 
-echo "✅ OneDrive nativo desinstalado."
+optional_cleanup() {
+  echo "[4/4] Limpieza opcional de carpeta sincronizada…"
+  echo "⚠️ OJO: se mantendrá ${SYNC_DIR} con tus archivos de música."
+  echo "Si quieres borrarla manualmente: sudo rm -rf ${SYNC_DIR}"
+}
+
+need_root
+remove_service
+remove_binary
+remove_config
+optional_cleanup
+
+echo "✅ OneDrive eliminado de esta Pi."
