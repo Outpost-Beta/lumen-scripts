@@ -1,3 +1,5 @@
+# 1) Sobrescribe con la versión corregida
+cat >/usr/local/bin/lumen-broadcast.sh <<'SH'
 #!/usr/bin/env bash
 # lumen-broadcast.sh  (VPS) • Ejecuta un comando en todas las Pis registradas
 # Uso:
@@ -91,3 +93,14 @@ for pair in "${targets[@]}"; do
   fi
 done
 wait
+SH
+
+# 2) Permisos y asegurar finales de línea UNIX (por si acaso)
+chmod +x /usr/local/bin/lumen-broadcast.sh
+sed -i 's/\r$//' /usr/local/bin/lumen-broadcast.sh
+
+# 3) Validar sintaxis
+bash -n /usr/local/bin/lumen-broadcast.sh
+
+# 4) Probar
+lumen-broadcast.sh -u -P 1 -t 30 -- 'hostnamectl --static'
