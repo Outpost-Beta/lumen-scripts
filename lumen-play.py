@@ -19,7 +19,7 @@ def list_mp3(folder):
     return [f for f in files if os.path.isfile(f)]
 
 def in_date_range(start_iso, end_iso, today=None):
-    """start/end: 'YYYY-MM-DD'  (permite wrap de año si end < start)"""
+    """start/end: 'YYYY-MM-DD' (permite wrap de año si end < start)"""
     if not start_iso or not end_iso:
         return False
     if today is None:
@@ -28,11 +28,11 @@ def in_date_range(start_iso, end_iso, today=None):
     e = datetime.date.fromisoformat(end_iso)
     if e >= s:
         return s <= today <= e
-    # Rango envuelve fin de año
+    # Rango que envuelve fin de año
     return today >= s or today <= e
 
 def in_mmdd_range(start_mmdd, end_mmdd, today=None):
-    """start/end: 'MM-DD'  para navideña; permite wrap."""
+    """start/end: 'MM-DD' para navidad; permite wrap."""
     if not start_mmdd or not end_mmdd:
         return False
     if today is None:
@@ -46,16 +46,27 @@ def in_mmdd_range(start_mmdd, end_mmdd, today=None):
     return t >= s or t <= e
 
 def load_conf():
+    # Defaults compatibles con tu flujo actual
     conf = {
-        "navidad": {"start": "12-01", "end": "01-07"},  # MM-DD
-        "temporada": {"start": "", "end": "", "replace_anuncios": False}
+        "playback": {
+            "songs_per_cycle": 3,      # cambia a 1 para “uno y uno”
+            "pause_between_tracks_s": 1
+        },
+        "navidad": {"start": "12-01", "end": "01-07", "enabled": True},
+        # Si define fechas, Temporada se activa automáticamente dentro del rango.
+        # Además, si pones force_replace=true, usará Temporada aunque no esté en fechas.
+        "temporada": {"start": "", "end": "", "force_replace": False}
     }
     try:
         if os.path.isfile(CONF_FILE):
             with open(CONF_FILE, "r") as f:
                 user = json.load(f)
-            for k in user:
-                conf[k] = user[k]
+            # merge superficial
+            for k, v in user.items():
+                if isinstance(v, dict) and isinstance(conf.get(k), dict):
+                    conf[k].update(v)
+                else:
+                    conf[k] = v
     except Exception as e:
         log(f"[WARN] No se pudo leer {CONF_FILE}: {e}")
     return conf
@@ -103,16 +114,25 @@ def main():
         log("[WARN] No hay MP3 en Lumen/* — esperando 30s…")
         time.sleep(30)
 
-    # Secuencias
-    anuncio_src = anuncios_norm
-    if conf.get("temporada", {}).get("replace_anuncios") and in_date_range(
-        conf["temporada"].get("start",""), conf["temporada"].get("end","")
-    ):
+    # Determinar fuente de “anuncios”:
+    # - Si hay rango de temporada vigente => usa Temporada
+    # - O si force_replace=true => usa Temporada aunque no esté en rango
+    temporada_cfg = conf.get("temporada", {})
+    temporada_activa = in_date_range(
+        temporada_cfg.get("start", ""), temporada_cfg.get("end", "")
+    )
+    if temporada_activa or temporada_cfg.get("force_replace", False):
         anuncio_src = anuncios_temp
+        if temporada_activa:
+            log("[INFO] Temporada ACTIVA: usando carpeta 'Temporada' para anuncios.")
+        else:
+            log("[INFO] Temporada FORZADA: usando carpeta 'Temporada' para anuncios.")
+    else:
+        anuncio_src = anuncios_norm
 
     anuncio_cycle = cycle(anuncio_src) if anuncio_src else None
 
-    # Bolsa aleatoria de canciones y navidad
+    # Bolsas aleatorias (sin repetición hasta agotar)
     song_bag = songs.copy()
     nav_bag = navidad.copy()
 
@@ -124,9 +144,12 @@ def main():
         i = random.randrange(len(bag))
         return bag.pop(i)
 
+    songs_per_cycle = max(1, int(conf.get("playback", {}).get("songs_per_cycle", 3)))
+    pause_s = max(0, int(conf.get("playback", {}).get("pause_between_tracks_s", 1)))
+
     while True:
-        # (1) 3 canciones aleatorias sin repetir
-        for _ in range(3):
+        # (1) N canciones aleatorias sin repetir según config
+        for _ in range(songs_per_cycle):
             track = take_random(song_bag, songs)
             if track:
                 play_file(track)
@@ -134,20 +157,23 @@ def main():
                 log("[INFO] No hay canciones en Canciones/; esperando 10s")
                 time.sleep(10)
 
-        # (2) 1 anuncio en orden alfabético (o nada si no hay)
+        # (2) 1 anuncio en orden alfabético (si hay)
         if anuncio_cycle:
             play_file(next(anuncio_cycle))
         else:
-            log("[INFO] No hay anuncios disponibles.")
+            log("[INFO] No hay anuncios disponibles en la fuente seleccionada.")
 
         # (3) ¿Navidad activa? entonces 1 navideña aleatoria sin repetir
-        if in_mmdd_range(conf["navidad"].get("start","12-01"), conf["navidad"].get("end","01-07")):
+        nav_cfg = conf.get("navidad", {})
+        if nav_cfg.get("enabled", True) and in_mmdd_range(
+            nav_cfg.get("start", "12-01"), nav_cfg.get("end", "01-07")
+        ):
             track = take_random(nav_bag, navidad)
             if track:
                 play_file(track)
 
-        # Pausa corta entre ciclos para no saturar
-        time.sleep(1)
+        # Pausa corta entre ciclos
+        time.sleep(pause_s)
 
 if __name__ == "__main__":
     try:
