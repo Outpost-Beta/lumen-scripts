@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # install_onedrive_native_pi.sh
-# Instala el cliente OneDrive (abraunegg) y configura un servicio systemd
-# que sincroniza ~/Lumen en modo download-only para el usuario 'admin'.
+# Instala OneDrive (abraunegg) y crea servicio systemd para sincronizar ~/Lumen (download-only)
 
 set -euo pipefail
 
@@ -10,59 +9,43 @@ HOME_DIR="/home/${USER_NAME}"
 CONF_DIR="${HOME_DIR}/.config/onedrive"
 SYNC_DIR="${HOME_DIR}/Lumen"
 
-need_root() {
-  if [[ $EUID -ne 0 ]]; then
-    echo "✋ Ejecuta como root: sudo $0"
-    exit 1
-  fi
-}
+need_root() { if [[ $EUID -ne 0 ]]; then echo "Ejecuta con: sudo $0"; exit 1; fi; }
 
 pkg_install() {
-  echo "[1/4] Paquetes base…"
+  echo "[1/4] Paquetes…"
   apt-get update -y
-  # Intentar paquete precompilado
+  # intenta paquete precompilado
   if ! apt-get install -y onedrive; then
-    echo "[INFO] Paquete 'onedrive' no disponible; intentando compilar desde fuente…"
-    apt-get install -y curl git build-essential pkg-config \
-                       ldc libcurl4-openssl-dev libsqlite3-dev libdbus-1-dev
-    # Compilación (ligera, funciona en Bookworm)
+    echo "[INFO] Paquete 'onedrive' no está en repos; compilando desde fuente…"
+    apt-get install -y curl git build-essential pkg-config ldc libcurl4-openssl-dev libsqlite3-dev libdbus-1-dev
     sudo -u "${USER_NAME}" bash -lc '
       set -euo pipefail
       rm -rf ~/onedrive-src
       git clone https://github.com/abraunegg/onedrive.git ~/onedrive-src
       cd ~/onedrive-src
       ./configure
-      make
+      make -j2
     '
     make -C "${HOME_DIR}/onedrive-src" install
   fi
 }
 
 prepare_dirs() {
-  echo "[2/4] Carpetas y config…"
-  mkdir -p "${SYNC_DIR}"
-  mkdir -p "${CONF_DIR}"
+  echo "[2/4] Config y carpetas…"
+  mkdir -p "${SYNC_DIR}" "${CONF_DIR}"
   chown -R "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/.config" "${SYNC_DIR}"
-
-  # Crea config si no existe (se respeta si ya hay bundle)
+  # si no llegó bundle aún, crea config básica
   if [[ ! -f "${CONF_DIR}/config" ]]; then
     sudo -u "${USER_NAME}" tee "${CONF_DIR}/config" >/dev/null <<'CFG'
-# Config base para Lumen (se respeta si llega un bundle)
-sync_dir = "~/.config/onedrive/../Lumen"
+sync_dir = "/home/admin/Lumen"
 download_only = "true"
-# Otras opciones útiles:
-# monitor_interval = "30"
-# skip_dir = ".*"
 CFG
   fi
-
-  # Lista de sync (opcional). Se respeta si ya existe por bundle.
   if [[ ! -f "${CONF_DIR}/sync_list" ]]; then
     sudo -u "${USER_NAME}" tee "${CONF_DIR}/sync_list" >/dev/null <<'SL'
 Lumen
 SL
   fi
-
   chmod 700 "${HOME_DIR}/.config" "${CONF_DIR}"
   find "${CONF_DIR}" -type f -exec chmod 600 {} \;
   chown -R "${USER_NAME}:${USER_NAME}" "${CONF_DIR}"
@@ -85,16 +68,15 @@ RestartSec=10s
 [Install]
 WantedBy=multi-user.target
 UNIT
-
   systemctl daemon-reload
   systemctl enable --now onedrive-lumen.service || true
 }
 
 smoke_test() {
-  echo "[4/4] Prueba rápida (no fatal si aún no hay token)…"
+  echo "[4/4] Prueba rápida… (no fatal si aún no hay bundle/tokens)"
   sudo -u "${USER_NAME}" bash -lc 'command -v onedrive >/dev/null && onedrive --synchronize --download-only || true'
   systemctl status onedrive-lumen.service --no-pager || true
-  echo "✅ OneDrive listo. Si ya empujaste el bundle desde el VPS, debería comenzar a sincronizar."
+  echo "✅ OneDrive listo: cuando empujes el bundle desde el VPS, sincroniza solo."
 }
 
 need_root
