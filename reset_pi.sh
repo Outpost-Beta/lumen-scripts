@@ -32,6 +32,8 @@ echo "[4/7] Eliminar binarios y configuración…"
 sudo rm -f /usr/local/bin/lumen-agent.sh /usr/local/bin/onedrive 2>/dev/null || true
 sudo rm -rf /etc/lumen 2>/dev/null || true
 
+sudo rm -f /usr/local/bin/lumen-play.py
+
 echo "[5/7] Conservar ~/Lumen (tu música), limpiar claves SSH locales…"
 echo "   (Si quisieras borrar música: rm -rf ~/Lumen)"
 rm -f ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub 2>/dev/null || true
