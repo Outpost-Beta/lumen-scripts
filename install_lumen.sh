@@ -38,6 +38,13 @@ fi
 echo "[3/10] Autorizar Pi→VPS (una vez)…"
 ssh-copy-id -i "$HOME_DIR/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
 
+# --- Autorizar VPS→Pi (para lumen-push-token.sh) ---
+if [[ -f /root/.ssh/id_ed25519.pub ]]; then
+  echo "[INFO] Autorizando la llave del VPS en la Pi..."
+  cat /root/.ssh/id_ed25519.pub >> "$HOME_DIR/.ssh/authorized_keys"
+  chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+fi
+
 # --- Generar y autorizar llaves SSH Pi <-> VPS ---
 
 # 1) Generar llave en la Pi si no existe
