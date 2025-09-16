@@ -36,7 +36,7 @@ echo "[3/5] Configuración: sync en /home/${PI_USER}/Lumen (download-only)"
 sudo -u "$PI_USER" mkdir -p "$CONF_DIR"
 sudo -u "$PI_USER" mkdir -p "/home/${PI_USER}/Lumen"
 
-# Si no hay config aún, crea una mínima (el binario la expande al primer run)
+# Si no hay config aún, crea una mínima
 if [[ ! -f "${CONF_DIR}/config" ]]; then
   cat <<CFG | sudo -u "$PI_USER" tee "${CONF_DIR}/config" >/dev/null
 sync_dir = "/home/${PI_USER}/Lumen"
@@ -47,7 +47,16 @@ dry_run = "false"
 upload_only = "false"
 download_only = "true"
 log_dir = "/home/${PI_USER}"
+threads = "4"
+force_http_11 = "true"
 CFG
+else
+  # Asegurar que las claves necesarias existan aunque ya hubiera config
+  for kv in 'threads = "4"' 'force_http_11 = "true"'; do
+    if ! grep -q "^\s*${kv}" "${CONF_DIR}/config"; then
+      echo "$kv" | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null
+    fi
+  done
 fi
 
 echo "[4/5] Crear servicio y timer (cada 5 min)…"
