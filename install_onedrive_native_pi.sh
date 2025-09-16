@@ -36,7 +36,7 @@ echo "[3/5] Configuración: sync en /home/${PI_USER}/Lumen (download-only)"
 sudo -u "$PI_USER" mkdir -p "$CONF_DIR"
 sudo -u "$PI_USER" mkdir -p "/home/${PI_USER}/Lumen"
 
-# Si no hay config aún, crea una mínima
+# Si no hay config aún, crea una mínima (el binario la expande al primer run)
 if [[ ! -f "${CONF_DIR}/config" ]]; then
   cat <<CFG | sudo -u "$PI_USER" tee "${CONF_DIR}/config" >/dev/null
 sync_dir = "/home/${PI_USER}/Lumen"
@@ -51,12 +51,11 @@ threads = "4"
 force_http_11 = "true"
 CFG
 else
-  # Asegurar que las claves necesarias existan aunque ya hubiera config
-  for kv in 'threads = "4"' 'force_http_11 = "true"'; do
-    if ! grep -q "^\s*${kv}" "${CONF_DIR}/config"; then
-      echo "$kv" | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null
-    fi
-  done
+  # Asegurar claves requeridas aunque ya hubiera config previa
+  need_add=0
+  grep -q '^\s*threads\s*=\s*"' "${CONF_DIR}/config" || { echo 'threads = "4"' | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null; need_add=1; }
+  grep -q '^\s*force_http_11\s*=\s*"' "${CONF_DIR}/config" || { echo 'force_http_11 = "true"' | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null; need_add=1; }
+  # No tocamos otras claves existentes (idempotente)
 fi
 
 echo "[4/5] Crear servicio y timer (cada 5 min)…"
