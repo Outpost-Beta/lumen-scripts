@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # /usr/local/bin/lumen-play.py
+# Reproductor Lumen con salida de audio forzada a ALSA analógica (hw:0,0)
+# Puedes cambiar el dispositivo con la variable de entorno LUMEN_ALSA_DEVICE (p. ej. hw:1,0 para HDMI).
 import os, sys, time, random, glob, json, datetime
 import vlc
 
@@ -10,6 +12,9 @@ DIR_TEMP = os.path.join(LUMEN_DIR, "Temporada")
 DIR_NAV  = os.path.join(LUMEN_DIR, "Navideña")
 CONF_DIR = "/etc/lumen"
 CONF_FILE = os.path.join(CONF_DIR, "player.conf")
+
+# Dispositivo ALSA: por defecto analógico hw:0,0; permite override por env
+ALSA_DEVICE = os.getenv("LUMEN_ALSA_DEVICE", "hw:0,0")
 
 def log(msg):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
@@ -72,8 +77,8 @@ def load_conf():
     return conf
 
 def play_file(path):
-    log(f"▶ Reproduciendo: {os.path.basename(path)}")
-    inst = vlc.Instance("--aout=alsa", "--intf=dummy")
+    log(f"▶ Reproduciendo: {os.path.basename(path)} -> {ALSA_DEVICE}")
+    inst = vlc.Instance("--aout=alsa", f"--alsa-audio-device={ALSA_DEVICE}", "--intf=dummy")
     player = inst.media_player_new()
     media = inst.media_new(path)
     player.set_media(media)
@@ -114,9 +119,7 @@ def main():
         log("[WARN] No hay MP3 en Lumen/* — esperando 30s…")
         time.sleep(30)
 
-    # Determinar fuente de “anuncios”:
-    # - Si hay rango de temporada vigente => usa Temporada
-    # - O si force_replace=true => usa Temporada aunque no esté en rango
+    # Determinar fuente de “anuncios”
     temporada_cfg = conf.get("temporada", {})
     temporada_activa = in_date_range(
         temporada_cfg.get("start", ""), temporada_cfg.get("end", "")
