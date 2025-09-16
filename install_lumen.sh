@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # install_lumen.sh — Instalador de la caja Lumen (Raspberry Pi, Bookworm headless)
-# Corrección incluida:
+# Correcciones incluidas:
+#  - Autoriza Pi→VPS (túnel) y VPS→Pi (push de tokens) automáticamente
 #  - Parseo robusto de la salida "DEVICE_ID=... PORT=..." de lumen-assign.sh
-#  - Uso de hostname único para asignación
 #  - Asegura /etc/hosts (127.0.1.1 <hostname>) para evitar "sudo: unable to resolve host"
 #  - Servicios: autossh (túnel reverso) + lumen-agent (heartbeat)
+#  - Crea estructura ~/Lumen/{Canciones,Anuncios,Navideña,Temporada}
 
 set -euo pipefail
 
 # --- Parámetros por defecto (puedes exportarlos antes de ejecutar) ---
 VPS_HOST="${VPS_HOST:-200.234.230.254}"
 VPS_USER="${VPS_USER:-root}"
-DEVICE_PREFIX="${DEVICE_PREFIX:-Box}"
 
 # --- Usuario local ---
 ME_USER="$(id -un)"
@@ -36,34 +36,23 @@ if [[ ! -f "$HOME_DIR/.ssh/id_ed25519" ]]; then
 fi
 
 echo "[3/10] Autorizar Pi→VPS (una vez)…"
+# Esto puede pedir la contraseña del VPS SOLO esta vez
 ssh-copy-id -i "$HOME_DIR/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
 
-# --- Autorizar VPS→Pi (para lumen-push-token.sh) ---
-if [[ -f /root/.ssh/id_ed25519.pub ]]; then
-  echo "[INFO] Autorizando la llave del VPS en la Pi..."
-  cat /root/.ssh/id_ed25519.pub >> "$HOME_DIR/.ssh/authorized_keys"
+# --- Autorizar VPS -> Pi (para lumen-push-token.sh) ---
+# Traemos la llave pública del VPS (~/.ssh/id_ed25519.pub) y la agregamos al authorized_keys de la Pi
+mkdir -p "$HOME_DIR/.ssh"
+chmod 700 "$HOME_DIR/.ssh"
+touch "$HOME_DIR/.ssh/authorized_keys"
+chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+
+if ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" "test -r ~/.ssh/id_ed25519.pub"; then
+  ssh "${VPS_USER}@${VPS_HOST}" "cat ~/.ssh/id_ed25519.pub" >> "$HOME_DIR/.ssh/authorized_keys"
   chmod 600 "$HOME_DIR/.ssh/authorized_keys"
-fi
-
-# --- Generar y autorizar llaves SSH Pi <-> VPS ---
-
-# 1) Generar llave en la Pi si no existe
-if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
-  ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-fi
-
-# 2) Copiar llave de la Pi al VPS (para que la Pi pueda abrir túnel sin password)
-ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST}
-
-# 3) Autorizar llave del VPS en la Pi (para que el VPS pueda empujar tokens sin password)
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-touch ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-
-# Si el VPS ya generó su llave (id_ed25519.pub), se agrega automáticamente
-if ssh -o BatchMode=yes ${VPS_USER}@${VPS_HOST} "test -f ~/.ssh/id_ed25519.pub"; then
-  ssh ${VPS_USER}@${VPS_HOST} "cat ~/.ssh/id_ed25519.pub" >> ~/.ssh/authorized_keys
+  echo "[INFO] Llave del VPS agregada a ~/.ssh/authorized_keys de la Pi."
+else
+  echo "[WARN] El VPS no tiene ~/.ssh/id_ed25519.pub."
+  echo "       En el VPS genera una con: ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519"
 fi
 
 # --- Config local ---
@@ -206,8 +195,14 @@ sudo systemctl enable --now autossh-lumen.service
 sudo systemctl enable --now lumen-agent.timer
 sudo systemctl start lumen-agent.service || true
 
-STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "[OK]${STAMP}"
-echo "Listo: DEVICE_ID=${DEVICE_ID}  PORT=${PORT}"
-echo "Conéctate desde el VPS con:"
-echo "  ssh -p ${PORT} admin@localhost"
+echo
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " Listo:"
+echo "  - DEVICE_ID=${DEVICE_ID}"
+echo "  - PORT=${PORT}"
+echo
+echo " Desde el VPS deberías poder entrar a la Pi sin password:"
+echo "   ssh -o BatchMode=yes -p ${PORT} admin@localhost 'echo OK'  # debe imprimir OK"
+echo
+echo " Para verificar latidos en el VPS: lumen-list.sh"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
