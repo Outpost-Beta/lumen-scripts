@@ -19,7 +19,8 @@ sudo apt-get install -y \
 echo "[2/5] Descargar/compilar onedrive (abraunegg)…"
 SRC_DIR="/home/${PI_USER}/onedrive-src"
 if [[ -d "$SRC_DIR/.git" ]]; then
-  git -C "$SRC_DIR" pull --ff-only
+  sudo chown -R "$PI_USER:$PI_USER" "$SRC_DIR"
+  sudo -u "$PI_USER" git -C "$SRC_DIR" pull --ff-only
 else
   sudo -u "$PI_USER" git clone https://github.com/abraunegg/onedrive.git "$SRC_DIR"
 fi
