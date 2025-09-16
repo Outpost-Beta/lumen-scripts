@@ -38,6 +38,27 @@ fi
 echo "[3/10] Autorizar Pi→VPS (una vez)…"
 ssh-copy-id -i "$HOME_DIR/.ssh/id_ed25519.pub" -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" || true
 
+# --- Generar y autorizar llaves SSH Pi <-> VPS ---
+
+# 1) Generar llave en la Pi si no existe
+if [ ! -f "$HOME/.ssh/id_ed25519.pub" ]; then
+  ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+fi
+
+# 2) Copiar llave de la Pi al VPS (para que la Pi pueda abrir túnel sin password)
+ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=accept-new ${VPS_USER}@${VPS_HOST}
+
+# 3) Autorizar llave del VPS en la Pi (para que el VPS pueda empujar tokens sin password)
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+# Si el VPS ya generó su llave (id_ed25519.pub), se agrega automáticamente
+if ssh -o BatchMode=yes ${VPS_USER}@${VPS_HOST} "test -f ~/.ssh/id_ed25519.pub"; then
+  ssh ${VPS_USER}@${VPS_HOST} "cat ~/.ssh/id_ed25519.pub" >> ~/.ssh/authorized_keys
+fi
+
 # --- Config local ---
 CONF_DIR="/etc/lumen"
 CONF_FILE="$CONF_DIR/lumen.conf"
