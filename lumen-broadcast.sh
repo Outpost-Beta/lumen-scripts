@@ -88,11 +88,6 @@ run_one() {
 # Paralelismo controlado
 active=0
 for pair in "${targets[@]}"; do
-  run_one "$pair" &
-  ((active++))
-  if (( active >= PARALLEL )); then
-    wait -n
-    ((active--))
-  fi
+  run_one "$pair"
 done
 wait
