@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lumen-list.sh (VPS) • Muestra las Pis registradas y estado de heartbeat
+# lumen-list.sh (VPS) • Lista Pis y estado; muestra hora en America/Mexico_City
 
 set -euo pipefail
 
@@ -8,21 +8,24 @@ source "$CONF" 2>/dev/null || { echo "No existe $CONF"; exit 1; }
 
 [[ -f "$DEVICES_TSV" ]] || { echo "No hay dispositivos registrados."; exit 0; }
 
-now=$(date -u +%s)
+LOCAL_TZ="America/Mexico_City"
 
-printf "%-10s %-6s %-20s %-6s %-3s\n" "DEVICE_ID" "PORT" "Last Seen (UTC)" "Age(s)" "UP?"
+now_epoch=$(date -u +%s)
+
+printf "%-10s %-6s %-22s %-6s %-3s\n" "DEVICE_ID" "PORT" "Last Seen (MX)" "Age(s)" "UP?"
 
 while read -r DEVICE_ID PORT HOSTNAME; do
   [[ -z "${DEVICE_ID:-}" ]] && continue
   hb="/srv/lumen/heartbeats/${DEVICE_ID}.ts"
   if [[ -f "$hb" ]]; then
-    ts=$(cat "$hb")
-    last=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
-    age=$((now - last))
-    up="NO"
-    (( age < 120 )) && up="YES"
-    printf "%-10s %-6s %-20s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "$ts" "$age" "$up"
+    ts="$(cat "$hb")"                                        # form: 2025-09-16T22:28:43Z (UTC)
+    last_epoch="$(date -u -d "$ts" +%s 2>/dev/null || echo 0)"
+    age=$((now_epoch - last_epoch))
+    up="NO"; (( age < 120 )) && up="YES"
+    # Render en zona MX sin tocar timezone del sistema
+    ts_mx="$(TZ="$LOCAL_TZ" date -d "$ts UTC" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo "-")"
+    printf "%-10s %-6s %-22s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "$ts_mx" "$age" "$up"
   else
-    printf "%-10s %-6s %-20s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "-" "-" "NO"
+    printf "%-10s %-6s %-22s %-6s %-3s\n" "$DEVICE_ID" "$PORT" "-" "-" "NO"
   fi
 done < "$DEVICES_TSV"
