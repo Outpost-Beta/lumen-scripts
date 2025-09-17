@@ -3,7 +3,7 @@
 # Uso:
 #   lumen-broadcast.sh [-u] [-P N] [-t SEC] -- <comando...>
 #     -u        : solo las que están UP (heartbeat <120s)
-#     -P N      : paralelismo (default 4)
+#     -P N      : paralelismo (default 4)  [*actual: se ejecuta en serie para mayor fiabilidad*]
 #     -t SEC    : timeout por host (default 120)
 #
 # Requiere: /etc/lumen-vps.conf con DEVICES_TSV y heartbeats.
@@ -61,6 +61,10 @@ if (( ${#targets[@]} == 0 )); then
   exit 0
 fi
 
+# Construir comando remoto seguro (respeta espacios/comillas/&&)
+CMD_STR="$(printf '%q ' "${CMD[@]}")"
+CMD_STR="${CMD_STR% }"
+
 echo "Objetivos, (${#targets[@]}):, ${targets[*]// /, }"
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN")
@@ -73,9 +77,9 @@ run_one() {
   # Purga clave previa del puerto para evitar "REMOTE HOST IDENTIFICATION HAS CHANGED!"
   ssh-keygen -R "[localhost]:${port}" -f "$KNOWN" >/dev/null 2>&1 || true
 
-  echo "[${dev}] -> ssh -p ${port} admin@localhost -- ${CMD[*]}"
+  echo "[${dev}] -> ssh -p ${port} admin@localhost -- ${CMD_STR}"
   local output rc=0
-  if output=$(timeout "${TIMEOUT}" ssh -p "${port}" "${SSH_OPTS[@]}" admin@localhost -- "${CMD[@]}" 2>&1); then
+  if output=$(timeout "${TIMEOUT}" ssh -p "${port}" "${SSH_OPTS[@]}" admin@localhost -- bash -lc "$CMD_STR" 2>&1); then
     echo "[${dev}] [OK]"
     [[ -n "$output" ]] && { echo "----- [${dev}] OUTPUT -----"; echo "$output"; }
   else
@@ -85,9 +89,7 @@ run_one() {
   fi
 }
 
-# Paralelismo controlado
-active=0
+# EJECUCIÓN EN SERIE (más fiable). Si quieres paralelismo, puedes restaurar el bucle con & y wait -n.
 for pair in "${targets[@]}"; do
   run_one "$pair"
 done
-wait
