@@ -1,0 +1,16 @@
+[Unit]
+Description=OneDrive sync (download-only) for Lumen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+Group=admin
+WorkingDirectory=/home/admin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/onedrive --confdir /home/admin/.config/onedrive --sync --download-only --verbose
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
