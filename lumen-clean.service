@@ -1,0 +1,15 @@
+[Unit]
+Description=Lumen: limpiar archivos huérfanos vs OneDrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+Group=admin
+WorkingDirectory=/home/admin
+ExecStart=/usr/local/bin/lumen-clean.sh
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
