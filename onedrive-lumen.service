@@ -6,11 +6,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=admin
-Group=admin
 WorkingDirectory=/home/admin
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/onedrive --confdir /home/admin/.config/onedrive --sync --download-only --verbose
+Environment=HOME=/home/admin
+Environment=XDG_CONFIG_HOME=/home/admin/.config
+ExecStart=/usr/local/bin/onedrive --confdir /home/admin/.config/onedrive --sync --download-only --verbose
 Nice=10
+SuccessExitStatus=0
 
 [Install]
 WantedBy=multi-user.target
