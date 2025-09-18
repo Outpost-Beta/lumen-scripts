@@ -44,4 +44,3 @@ if grep -q '^NEXT_INDEX=' "$CONF" 2>/dev/null; then
 fi
 
 echo "DEVICE_ID=${DID} PORT=${PORT}"
-lol
