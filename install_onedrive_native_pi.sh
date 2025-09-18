@@ -73,7 +73,7 @@ After=network-online.target
 Type=simple
 User=${PI_USER}
 Group=${PI_USER}
-ExecStart=/usr/local/bin/onedrive --confdir ${CONF_DIR} --synchronize --download-only
+ExecStart=/usr/local/bin/onedrive --confdir=${CONF_DIR} --synchronize --resync
 Restart=on-failure
 RestartSec=10s
 Nice=10
