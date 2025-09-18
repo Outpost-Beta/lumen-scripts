@@ -3,7 +3,7 @@
 # Uso:
 #   lumen-broadcast.sh [-u] [-P N] [-t SEC] -- <comando...>
 #     -u        : solo las que están UP (heartbeat <120s)
-#     -P N      : paralelismo (default 4)
+#     -P N      : paralelismo (default 8)
 #     -t SEC    : timeout por host (default 120)
 #
 # Requiere: /etc/lumen-vps.conf con DEVICES_TSV y heartbeats.
@@ -14,9 +14,9 @@ CONF="/etc/lumen-vps.conf"
 source "$CONF" 2>/dev/null || { echo "No existe $CONF"; exit 1; }
 
 ONLY_UP=0
-PARALLEL=4
+PARALLEL=8
 TIMEOUT=120
-KNOWN="/srv/lumen/known_hosts"   # known_hosts dedicado para broadcast
+KNOWN="/srv/lumen/known_hosts"
 mkdir -p /srv/lumen
 touch "$KNOWN"
 
@@ -24,14 +24,14 @@ touch "$KNOWN"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -u) ONLY_UP=1; shift ;;
-    -P) PARALLEL="${2:-4}"; shift 2 ;;
+    -P) PARALLEL="${2:-8}"; shift 2 ;;
     -t) TIMEOUT="${2:-120}"; shift 2 ;;
     --) shift; break ;;
     *) echo "Flag desconocido: $1"; exit 1 ;;
   esac
 done
 [[ $# -gt 0 ]] || { echo "Falta el comando a ejecutar. Usa -- <comando>"; exit 1; }
-CMD=( "$@" )
+CMD=( "$@" )  # conserva espacios/comillas
 
 [[ -f "$DEVICES_TSV" ]] || { echo "No existe $DEVICES_TSV"; exit 0; }
 
@@ -70,7 +70,7 @@ run_one() {
   local dev="${pair%%:*}"
   local port="${pair##*:}"
 
-  # Purga clave previa del puerto para evitar "REMOTE HOST IDENTIFICATION HAS CHANGED!"
+  # Evitar conflictos de host key por puerto
   ssh-keygen -R "[localhost]:${port}" -f "$KNOWN" >/dev/null 2>&1 || true
 
   echo "[${dev}] -> ssh -p ${port} admin@localhost -- ${CMD[*]}"
@@ -85,9 +85,14 @@ run_one() {
   fi
 }
 
-# Paralelismo controlado
+# Paralelismo controlado (Bash 5+: wait -n)
 active=0
 for pair in "${targets[@]}"; do
-  run_one "$pair"
+  run_one "$pair" &
+  ((active++))
+  if (( active >= PARALLEL )); then
+    wait -n
+    ((active--))
+  fi
 done
 wait
