@@ -1,10 +1,10 @@
 [Unit]
-Description=Run OneDrive Lumen sync every 20 minutes
+Description=Run OneDrive sync periodically (Lumen)
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=20min
-AccuracySec=30s
+OnBootSec=5m
+OnUnitActiveSec=20m
+RandomizedDelaySec=60
 Persistent=true
 Unit=onedrive-lumen.service
 
