@@ -1,0 +1,12 @@
+[Unit]
+Description=Programar limpieza de huérfanos Lumen
+
+[Timer]
+OnBootSec=7m
+OnUnitActiveSec=30m
+RandomizedDelaySec=60
+Persistent=true
+Unit=lumen-clean.service
+
+[Install]
+WantedBy=timers.target
