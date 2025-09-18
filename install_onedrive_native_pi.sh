@@ -1,30 +1,31 @@
 #!/usr/bin/env bash
-# install_onedrive_native_pi.sh — Instala y activa OneDrive Client for Linux (abraunegg)
-# - Compila desde fuente (ldc) y deja binario en /usr/local/bin/onedrive
-# - Crea servicio y timer de systemd (nivel sistema) que ejecutan cada 5 minutos (download-only)
-# - Usa configuración en /home/admin/.config/onedrive (tokens/bundle si fueron empujados)
+# install_onedrive_native_pi.sh — Instala y configura OneDrive (abraunegg) en la Pi
+# - Compila / actualiza binario en /usr/local/bin/onedrive
+# - Garantiza config en ~/.config/onedrive (download_only, threads, HTTP/1.1)
+# - Crea o actualiza onedrive-lumen.service
+# - COPIA onedrive-lumen.timer DESDE EL REPO (20 min) y lo habilita
+# - Idempotente
 
 set -euo pipefail
 
 PI_USER="${SUDO_USER:-$USER}"
-CONF_DIR="/home/${PI_USER}/.config/onedrive"
+HOME_DIR="/home/${PI_USER}"
+CONF_DIR="${HOME_DIR}/.config/onedrive"
+REPO_DIR="${HOME_DIR}/lumen-scripts"
 
-echo "[1/5] Paquetes base…"
+echo "[1/6] Paquetes base…"
 sudo apt-get update -y
-sudo apt-get install -y \
-  build-essential git curl pkg-config \
-  ldc libdbus-1-dev \
-  libcurl4-openssl-dev libsqlite3-dev
+sudo apt-get install -y build-essential git curl pkg-config \
+  ldc libdbus-1-dev libcurl4-openssl-dev libsqlite3-dev
 
-echo "[2/5] Descargar/compilar onedrive (abraunegg)…"
-SRC_DIR="/home/${PI_USER}/onedrive-src"
+echo "[2/6] Descargar/compilar onedrive (abraunegg)…"
+SRC_DIR="${HOME_DIR}/onedrive-src"
 if [[ -d "$SRC_DIR/.git" ]]; then
   sudo chown -R "$PI_USER:$PI_USER" "$SRC_DIR"
   sudo -u "$PI_USER" git -C "$SRC_DIR" pull --ff-only
 else
   sudo -u "$PI_USER" git clone https://github.com/abraunegg/onedrive.git "$SRC_DIR"
 fi
-
 pushd "$SRC_DIR" >/dev/null
 sudo -u "$PI_USER" ./configure
 sudo -u "$PI_USER" make clean || true
@@ -32,33 +33,36 @@ sudo -u "$PI_USER" make -j"$(nproc)"
 sudo make install
 popd >/dev/null
 
-echo "[3/5] Configuración: sync en /home/${PI_USER}/Lumen (download-only)"
-sudo -u "$PI_USER" mkdir -p "$CONF_DIR"
-sudo -u "$PI_USER" mkdir -p "/home/${PI_USER}/Lumen"
+echo "[3/6] Configuración local…"
+sudo -u "$PI_USER" mkdir -p "$CONF_DIR" "${HOME_DIR}/Lumen"
 
-# Si no hay config aún, crea una mínima (el binario la expande al primer run)
-if [[ ! -f "${CONF_DIR}/config" ]]; then
-  cat <<CFG | sudo -u "$PI_USER" tee "${CONF_DIR}/config" >/dev/null
-sync_dir = "/home/${PI_USER}/Lumen"
+CFG_FILE="${CONF_DIR}/config"
+if [[ ! -f "$CFG_FILE" ]]; then
+  cat <<CFG | sudo -u "$PI_USER" tee "$CFG_FILE" >/dev/null
+sync_dir = "${HOME_DIR}/Lumen"
 skip_dir = "~*"
 monitor_interval = "300"
 min_notify_changes = "5"
 dry_run = "false"
 upload_only = "false"
 download_only = "true"
-log_dir = "/home/${PI_USER}"
+log_dir = "${HOME_DIR}"
 threads = "4"
 force_http_11 = "true"
 CFG
 else
-  # Asegurar claves requeridas aunque ya hubiera config previa
-  need_add=0
-  grep -q '^\s*threads\s*=\s*"' "${CONF_DIR}/config" || { echo 'threads = "4"' | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null; need_add=1; }
-  grep -q '^\s*force_http_11\s*=\s*"' "${CONF_DIR}/config" || { echo 'force_http_11 = "true"' | sudo -u "$PI_USER" tee -a "${CONF_DIR}/config" >/dev/null; need_add=1; }
-  # No tocamos otras claves existentes (idempotente)
+  # Asegurar claves requeridas (idempotente)
+  grep -q '^\s*sync_dir\s*=' "$CFG_FILE" || echo "sync_dir = \"${HOME_DIR}/Lumen\"" | sudo -u "$PI_USER" tee -a "$CFG_FILE" >/dev/null
+  sed -i "s|^\s*sync_dir\s*=.*|sync_dir = \"${HOME_DIR}/Lumen\"|" "$CFG_FILE"
+  grep -q '^\s*download_only\s*=' "$CFG_FILE" || echo 'download_only = "true"' | sudo -u "$PI_USER" tee -a "$CFG_FILE" >/dev/null
+  sed -i 's|^\s*download_only\s*=.*|download_only = "true"|' "$CFG_FILE"
+  grep -q '^\s*threads\s*=' "$CFG_FILE" || echo 'threads = "4"' | sudo -u "$PI_USER" tee -a "$CFG_FILE" >/dev/null
+  sed -i 's|^\s*threads\s*=.*|threads = "4"|' "$CFG_FILE"
+  grep -q '^\s*force_http_11\s*=' "$CFG_FILE" || echo 'force_http_11 = "true"' | sudo -u "$PI_USER" tee -a "$CFG_FILE" >/dev/null
+  sed -i 's|^\s*force_http_11\s*=.*|force_http_11 = "true"|' "$CFG_FILE"
 fi
 
-echo "[4/5] Crear servicio y timer (cada 5 min)…"
+echo "[4/6] Servicio systemd (onedrive-lumen.service)…"
 sudo tee /etc/systemd/system/onedrive-lumen.service >/dev/null <<UNIT
 [Unit]
 Description=OneDrive sync for Lumen (download-only)
@@ -69,7 +73,7 @@ After=network-online.target
 Type=simple
 User=${PI_USER}
 Group=${PI_USER}
-ExecStart=/usr/local/bin/onedrive --confdir /home/${PI_USER}/.config/onedrive --synchronize --download-only
+ExecStart=/usr/local/bin/onedrive --confdir ${CONF_DIR} --synchronize --download-only
 Restart=on-failure
 RestartSec=10s
 Nice=10
@@ -78,29 +82,42 @@ Nice=10
 WantedBy=multi-user.target
 UNIT
 
-sudo tee /etc/systemd/system/onedrive-lumen.timer >/dev/null <<UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable onedrive-lumen.service
+
+echo "[5/6] Timer DESDE EL REPO (20 min)…"
+# Preferimos el archivo versionado en el repo. Fallback: crear uno de 20 min si no existe.
+if [[ -f "${REPO_DIR}/onedrive-lumen.timer" ]]; then
+  sudo cp "${REPO_DIR}/onedrive-lumen.timer" /etc/systemd/system/onedrive-lumen.timer
+else
+  echo "(!) onedrive-lumen.timer no encontrado en ${REPO_DIR}, creando uno de 20 min por fallback."
+  sudo tee /etc/systemd/system/onedrive-lumen.timer >/dev/null <<TIMER
 [Unit]
-Description=Run OneDrive Lumen sync every 5 minutes
+Description=Run OneDrive Lumen sync every 20 minutes
 
 [Timer]
-OnUnitActiveSec=5min
+OnBootSec=1min
+OnUnitActiveSec=20min
 AccuracySec=30s
 Persistent=true
 Unit=onedrive-lumen.service
 
 [Install]
 WantedBy=timers.target
-UNIT
+TIMER
+fi
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now onedrive-lumen.timer
 
-echo "[5/5] Primer intento (no fatal si aún no hay token)…"
+echo "[6/6] Verificación rápida…"
+# Mostrar definición efectiva del timer y próxima ejecución (para confirmar 20 min)
+systemctl cat onedrive-lumen.timer || true
+systemctl list-timers onedrive-lumen.timer --all || true
+
+# Primer sync best-effort (no fatal si aún no hay token)
 if ! sudo -u "${PI_USER}" /usr/local/bin/onedrive --confdir "${CONF_DIR}" --synchronize --download-only >/dev/null 2>&1; then
-  echo "Nota: si no hay token aún, la sincronización arrancará cuando se empuje el bundle o autorices manualmente."
+  echo "Nota: si no hay token aún, la sync automática correrá cuando empujes el bundle."
 fi
 
-echo "✅ OneDrive instalado:"
-echo "  - Servicio/Timer: onedrive-lumen.(service|timer) (cada 5 min)"
-echo "  - Carpeta local:  /home/${PI_USER}/Lumen"
-echo "  - Config:         ${CONF_DIR}"
+echo "✅ OneDrive listo: service activo + timer (20 min) desde repo"
