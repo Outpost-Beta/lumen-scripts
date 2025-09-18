@@ -63,7 +63,7 @@ fi
 
 echo "Objetivos, (${#targets[@]}):, ${targets[*]// /, }"
 
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN")
+SSH_OPTS=(-tt -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN")
 
 run_one() {
   local pair="$1"
