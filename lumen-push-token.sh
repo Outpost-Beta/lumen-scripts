@@ -69,7 +69,7 @@ mkdir -p "$HOME/Lumen"
 sudo systemctl stop onedrive-lumen.timer onedrive-lumen.service 2>/dev/null || true
 
 # Primer resync (solo descarga). Puede tardar si hay muchos archivos.
-if ! /usr/local/bin/onedrive --resync --download-only --verbose; then
+if ! /usr/local/bin/onedrive --synchronize --resync --verbose; then
   echo "[WARN] onedrive --resync devolvió error. Revisa 'journalctl -u onedrive-lumen.service' luego." >&2
 fi
 
