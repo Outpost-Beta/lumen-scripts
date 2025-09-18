@@ -15,7 +15,7 @@ while read -r DEVICE_ID PORT HOSTNAME; do
   [[ -z "${DEVICE_ID:-}" ]] && continue
   hb="/srv/lumen/heartbeats/${DEVICE_ID}.ts"
   if [[ -f "$hb" ]]; then
-    ts="$(cat "$hb")"  # generado como 2025-09-16T22:28:43Z por el agente:contentReference[oaicite:0]{index=0}
+    ts="$(cat "$hb")"  # generado como 2025-09-16T22:28:43Z por el agente
     last_epoch="$(date -u -d "$ts" +%s 2>/dev/null || echo 0)"
     age=$((now_epoch - last_epoch))
     up="NO"; (( age < 120 )) && up="YES"
