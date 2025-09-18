@@ -42,7 +42,7 @@ ssh -p "$PORT" -o 'StrictHostKeyChecking=accept-new' admin@localhost 'bash -lc "
   rm -f \"\$CONF/items.sqlite3\" 2>/dev/null || true
 
   # Binario real (evita path hardcodeado)
-  BIN=\$(command -v onedrive || true)
+  BIN=\\$(command -v onedrive --synchronize || true)
   if [[ -z \"\$BIN\" ]]; then
     echo \"[ERROR] onedrive no está instalado en la caja\" >&2
     exit 1
