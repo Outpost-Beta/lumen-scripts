@@ -16,9 +16,16 @@ echo "INFO: Asegurando que el directorio /home/admin/Lumen existe."
 mkdir -p /home/admin/Lumen
 sudo chown -R admin:admin /home/admin
 
-# Paso 3: Crear remoto FTP de forma no interactiva
+# Paso 3: Solicitar contraseña y crear remoto FTP
 echo "INFO: Configurando el remoto 'Lumen' para rclone..."
-FTP_PASS='#GwGT7;6t2H8eh'
+
+# --- INICIO DEL CAMBIO ---
+# Solicitar la contraseña de forma segura (no se mostrará en pantalla)
+echo -n "Por favor, introduce la contraseña del servidor FTP: "
+read -s FTP_PASS
+echo # Añade un salto de línea para mejorar el formato de la salida
+# --- FIN DEL CAMBIO ---
+
 OBSCURED_PASS=$(rclone obscure "$FTP_PASS")
 
 rclone config create \
