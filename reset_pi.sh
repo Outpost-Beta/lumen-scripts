@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 # reset_pi.sh — Limpia completamente la Raspberry Pi para reinstalar Lumen
-# Conserva ~/Lumen (tu música). Si vas a formatear, NO necesitas este script.
+# Versión actualizada para el sistema FTP/rclone.
 
 set -euo pipefail
 
-echo "[1/7] Detener y deshabilitar servicios Lumen/OneDrive…"
-sudo systemctl stop autossh-lumen.service lumen-agent.service lumen-agent.timer \
-                    onedrive-lumen.service onedrive-lumen.timer \
-                    lumen-play.service 2>/dev/null || true
-sudo systemctl disable autossh-lumen.service lumen-agent.service lumen-agent.timer \
-                       onedrive-lumen.service onedrive-lumen.timer \
-                       lumen-play.service 2>/dev/null || true
+echo "[1/7] Detener y deshabilitar servicios Lumen/FTP…"
+sudo systemctl stop autossh-lumen.service lumen-agent.timer lumen-play.service \
+                    ftp-sync-Lumen.timer ftp-sync-Lumen.service 2>/dev/null || true
+sudo systemctl disable autossh-lumen.service lumen-agent.timer lumen-play.service \
+                       ftp-sync-Lumen.timer ftp-sync-Lumen.service 2>/dev/null || true
 
 echo "[2/7] Eliminar units systemd…"
 sudo rm -f /etc/systemd/system/autossh-lumen.service
 sudo rm -f /etc/systemd/system/lumen-agent.service
 sudo rm -f /etc/systemd/system/lumen-agent.timer
-sudo rm -f /etc/systemd/system/onedrive-lumen.service
-sudo rm -f /etc/systemd/system/onedrive-lumen.timer
 sudo rm -f /etc/systemd/system/lumen-play.service
+sudo rm -f /etc/systemd/system/ftp-sync-Lumen.service
+sudo rm -f /etc/systemd/system/ftp-sync-Lumen.timer
 sudo systemctl daemon-reload
 
 echo "[3/7] Matar procesos autossh/ssh…"
@@ -29,13 +27,13 @@ pkill -9 -f 'autossh.*@' 2>/dev/null || true
 pkill -9 -f 'ssh .*@'    2>/dev/null || true
 
 echo "[4/7] Eliminar binarios y configuración…"
-sudo rm -f /usr/local/bin/lumen-agent.sh /usr/local/bin/onedrive 2>/dev/null || true
-sudo rm -rf /etc/lumen 2>/dev/null || true
-
+sudo rm -f /usr/local/bin/lumen-agent.sh
 sudo rm -f /usr/local/bin/lumen-play.py
+sudo rm -f /usr/local/bin/ftp_sync_Lumen.sh
+sudo rm -rf /etc/lumen 2>/dev/null || true
+rm -rf ~/.config/rclone
 
-echo "[5/7] Conservar ~/Lumen (tu música), limpiar claves SSH locales…"
-echo "   (Si quisieras borrar música: rm -rf ~/Lumen)"
+echo "[5/7] Conservar ~/Lumen (música), limpiar claves SSH locales…"
 rm -f ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub 2>/dev/null || true
 
 echo "[6/7] Limpiar huellas de VPS en known_hosts y mantener /etc/hosts sano…"
