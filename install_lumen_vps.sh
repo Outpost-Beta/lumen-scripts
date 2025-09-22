@@ -131,4 +131,8 @@ grep -q '^ClientAliveInterval 300' "$SSHD" || echo "ClientAliveInterval 300" >> 
 grep -q '^ClientAliveCountMax 12' "$SSHD" || echo "ClientAliveCountMax 12" >> "$SSHD"
 systemctl restart ssh
 
+echo "[6/5] Instalando utilidades adicionales…"
+cp ./lumen-broadcast.sh "$BIN_DIR/"
+chmod +x "$BIN_DIR/lumen-broadcast.sh"
+
 echo "✅ VPS listo. Usa 'lumen-list.sh' para ver dispositivos."
