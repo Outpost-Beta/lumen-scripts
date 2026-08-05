@@ -1,0 +1,8 @@
+Canciones: 2
+Anuncios: 1
+Temporada: 1
+Navidad: 1
+TempFechaIni: 01/08/26
+TempFechaFin: 31/08/26
+NavFechaIni: 24/12/26
+NavFechaFin: 07/01/27

@@ -25,6 +25,7 @@ state = {
     "last_conf_mtime": 0,
     "anuncio_idx": 0,    # Índice para anuncios alfabéticos
     "temporada_idx": 0,  # Índice para anuncios temporada alfabéticos
+    "normal_cycle_count": 0,  # Ciclos normales desde el último bloque de temporada
     "song_bag": [],      # Bolsa aleatoria canciones
     "nav_bag": []        # Bolsa aleatoria navidad
 }
@@ -162,25 +163,14 @@ def main():
             time.sleep(10)
             continue
 
-        # 1. CANCIONES NORMALES
-        count = conf.get("Canciones", 1)
-        for _ in range(count):
-            track = get_random_norepeat(state["song_bag"], f_songs)
-            if track: 
-                play_track(track)
-                load_config()
+        temporada_programada = (
+            is_active(conf["TempFechaIni"], conf["TempFechaFin"])
+            and conf.get("Temporada", 0) > 0
+            and bool(f_temp)
+        )
 
-        # 2. ANUNCIOS (A-Z)
-        count = conf.get("Anuncios", 1)
-        for _ in range(count):
-            track, new_idx = get_next_alphabetical(state["anuncio_idx"], f_ads)
-            state["anuncio_idx"] = new_idx
-            if track:
-                play_track(track)
-                load_config()
-
-        # 3. TEMPORADA (A-Z, si fecha activa)
-        if is_active(conf["TempFechaIni"], conf["TempFechaFin"]):
+        # Cada sexto ciclo activo se reserva exclusivamente para temporada.
+        if temporada_programada and state["normal_cycle_count"] >= 5:
             count = conf.get("Temporada", 0)
             for _ in range(count):
                 track, new_idx = get_next_alphabetical(state["temporada_idx"], f_temp)
@@ -188,8 +178,31 @@ def main():
                 if track:
                     play_track(track)
                     load_config()
+            state["normal_cycle_count"] = 0
+        else:
+            # 1. CANCIONES NORMALES
+            count = conf.get("Canciones", 1)
+            for _ in range(count):
+                track = get_random_norepeat(state["song_bag"], f_songs)
+                if track:
+                    play_track(track)
+                    load_config()
 
-        # 4. NAVIDAD (Random, si fecha activa)
+            # 2. ANUNCIOS (A-Z)
+            count = conf.get("Anuncios", 1)
+            for _ in range(count):
+                track, new_idx = get_next_alphabetical(state["anuncio_idx"], f_ads)
+                state["anuncio_idx"] = new_idx
+                if track:
+                    play_track(track)
+                    load_config()
+
+            if temporada_programada:
+                state["normal_cycle_count"] += 1
+            else:
+                state["normal_cycle_count"] = 0
+
+        # 3. NAVIDAD (Random, si fecha activa)
         if is_active(conf["NavFechaIni"], conf["NavFechaFin"]):
             count = conf.get("Navidad", 0)
             for _ in range(count):
